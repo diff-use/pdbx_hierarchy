@@ -7,6 +7,7 @@ from pdbx_hierarchy.io.reader import (
     read_hierarchy,
     read_mmcif,
 )
+from pdbx_hierarchy.io.validation import validate_atom_site_references, validate_file
 from pdbx_hierarchy.io.writer import (
     write_atom_site_heterogeneity_ids,
     write_coexistence,
@@ -24,4 +25,6 @@ __all__ = [
     "write_coexistence",
     "write_atom_site_heterogeneity_ids",
     "write_mmcif",
+    "validate_atom_site_references",
+    "validate_file",
 ]

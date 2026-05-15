@@ -50,9 +50,7 @@ def write_coexistence(block: gemmi.cif.Block, coexistence: CoexistenceTable, *, 
         loop.add_row([row["id"], row["rule"], row["heterogeneity_id"], row["heterogeneity_ids"], row["description"]])
 
 
-def write_atom_site_heterogeneity_ids(
-    block: gemmi.cif.Block, ids: list[str], *, overwrite: bool = False
-) -> None:
+def write_atom_site_heterogeneity_ids(block: gemmi.cif.Block, ids: list[str], *, overwrite: bool = False) -> None:
     """Write pdbx_heterogeneity_id values into the _atom_site loop.
 
     Appends a pdbx_heterogeneity_id column to the existing _atom_site loop.
@@ -73,9 +71,7 @@ def write_atom_site_heterogeneity_ids(
     if block.find_loop("_atom_site.pdbx_heterogeneity_id") and not overwrite:
         raise PdbxValidationError("_atom_site.pdbx_heterogeneity_id already exists; pass overwrite=True to replace")
     if len(ids) != len(id_col):
-        raise PdbxValidationError(
-            f"ids length {len(ids)} does not match atom_site row count {len(id_col)}"
-        )
+        raise PdbxValidationError(f"ids length {len(ids)} does not match atom_site row count {len(id_col)}")
     cat = block.get_mmcif_category("_atom_site.")
     cat["pdbx_heterogeneity_id"] = list(ids)
     block.set_mmcif_category("_atom_site.", cat)
