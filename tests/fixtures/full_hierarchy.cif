@@ -1,0 +1,28 @@
+data_FULL_HIERARCHY
+#
+loop_
+_pdbx_heterogeneity_hierarchy.id
+_pdbx_heterogeneity_hierarchy.name
+_pdbx_heterogeneity_hierarchy.parent
+_pdbx_heterogeneity_hierarchy.details
+Base base_state . ?
+A state_a Base ?
+#
+loop_
+_pdbx_state_coexistence.id
+_pdbx_state_coexistence.rule
+_pdbx_state_coexistence.heterogeneity_id
+_pdbx_state_coexistence.heterogeneity_ids
+_pdbx_state_coexistence.description
+1 NOT Base A ?
+#
+loop_
+_atom_site.id
+_atom_site.type_symbol
+_atom_site.Cartn_x
+_atom_site.Cartn_y
+_atom_site.Cartn_z
+_atom_site.pdbx_heterogeneity_id
+1 C 1.000 2.000 3.000 Base
+2 N 4.000 5.000 6.000 A
+#

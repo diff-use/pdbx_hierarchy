@@ -1,0 +1,12 @@
+data_ATOM_SITE_ONLY
+#
+loop_
+_atom_site.id
+_atom_site.type_symbol
+_atom_site.Cartn_x
+_atom_site.Cartn_y
+_atom_site.Cartn_z
+1 C 1.000 2.000 3.000
+2 N 4.000 5.000 6.000
+3 O 7.000 8.000 9.000
+#

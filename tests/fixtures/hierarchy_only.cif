@@ -1,0 +1,11 @@
+data_HIERARCHY_ONLY
+#
+loop_
+_pdbx_heterogeneity_hierarchy.id
+_pdbx_heterogeneity_hierarchy.name
+_pdbx_heterogeneity_hierarchy.parent
+_pdbx_heterogeneity_hierarchy.details
+Base base_state . ?
+A state_a Base ?
+B state_b Base ?
+#
