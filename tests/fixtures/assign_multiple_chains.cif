@@ -1,0 +1,21 @@
+data_MULTIPLE_CHAINS
+#
+loop_
+_atom_site.id
+_atom_site.label_asym_id
+_atom_site.label_seq_id
+_atom_site.label_atom_id
+_atom_site.label_alt_id
+1  A 1 N  A
+2  A 1 N  B
+3  A 1 CA A
+4  A 1 CA B
+5  A 1 C  A
+6  A 1 C  B
+7  B 1 N  A
+8  B 1 N  B
+9  B 1 CA A
+10 B 1 CA B
+11 B 1 C  A
+12 B 1 C  B
+#

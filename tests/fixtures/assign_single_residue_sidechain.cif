@@ -1,0 +1,13 @@
+data_SINGLE_RESIDUE_SIDECHAIN
+#
+loop_
+_atom_site.id
+_atom_site.label_asym_id
+_atom_site.label_seq_id
+_atom_site.label_atom_id
+_atom_site.label_alt_id
+1 A 1 N  .
+2 A 1 CA .
+3 A 1 CB A
+4 A 1 CB B
+#

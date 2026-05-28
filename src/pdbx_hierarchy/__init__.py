@@ -11,6 +11,7 @@ from pdbx_hierarchy.exceptions import (
     PdbxParseError,
     PdbxValidationError,
 )
+from pdbx_hierarchy.assignment import assign_from_alt_ids
 from pdbx_hierarchy.io import (
     has_hierarchy,
     read_atom_site_heterogeneity_ids,
@@ -52,6 +53,8 @@ __all__ = [
     "StateCoexistence",
     "CoexistenceTable",
     "HierarchyIdGenerator",
+    # Assignment
+    "assign_from_alt_ids",
     # I/O
     "read_mmcif",
     "has_hierarchy",
