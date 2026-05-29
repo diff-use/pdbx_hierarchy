@@ -2,6 +2,7 @@
 
 from importlib.metadata import version
 
+from pdbx_hierarchy.assignment import assign_from_alt_ids
 from pdbx_hierarchy.exceptions import (
     AtomSiteReferenceError,
     HierarchyNotFoundError,
@@ -52,6 +53,8 @@ __all__ = [
     "StateCoexistence",
     "CoexistenceTable",
     "HierarchyIdGenerator",
+    # Assignment
+    "assign_from_alt_ids",
     # I/O
     "read_mmcif",
     "has_hierarchy",
