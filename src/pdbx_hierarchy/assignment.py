@@ -31,6 +31,7 @@ class _AtomRecord:
 class _GroupClusters:
     ca_side_rep: int
     n_side_rep: int | None
+    all_n_adj: bool = False
 
 
 class _UnionFind:
@@ -227,7 +228,11 @@ def _initial_groups(
         else:
             for ri in row_indices[1:]:
                 uf.union(row_indices[0], ri)
-            group_clusters[(res_key, alt_id)] = _GroupClusters(ca_side_rep=row_indices[0], n_side_rep=None)
+            group_clusters[(res_key, alt_id)] = _GroupClusters(
+                ca_side_rep=row_indices[0],
+                n_side_rep=None,
+                all_n_adj=has_n_adj and not has_non_n_adj,
+            )
 
     return uf, group_clusters
 
@@ -295,8 +300,11 @@ def _apply_merges(
 
                 if r_c_alt and r1_n_alt:
                     uf.union(r_gc.ca_side_rep, r1_gc.ca_side_rep)
-                elif r_c_alt and not r1_n_alt and r1_h_alt and r1_gc.n_side_rep is not None:
-                    uf.union(r_gc.ca_side_rep, r1_gc.n_side_rep)
+                elif r_c_alt and not r1_n_alt and r1_h_alt:
+                    if r1_gc.n_side_rep is not None:
+                        uf.union(r_gc.ca_side_rep, r1_gc.n_side_rep)
+                    elif r1_gc.all_n_adj:
+                        uf.union(r_gc.ca_side_rep, r1_gc.ca_side_rep)
 
 
 def _build_tree(

@@ -49,6 +49,11 @@ def multi_chain_result() -> tuple[HierarchyTree, list[str]]:
     return assign_from_alt_ids(FIXTURES / "assign_multiple_chains.cif")
 
 
+@pytest.fixture
+def h_only_alt_result() -> tuple[HierarchyTree, list[str]]:
+    return assign_from_alt_ids(FIXTURES / "assign_h_only_alt.cif")
+
+
 class TestNoAltConformations:
     def test_all_dot_returns_base_only(self, no_alt_result: tuple[HierarchyTree, list[str]]) -> None:
         tree, assignments = no_alt_result
@@ -154,6 +159,28 @@ class TestHOnNMerge:
     def test_four_alt_states_total(self, h_on_n_result: tuple[HierarchyTree, list[str]]) -> None:
         tree, _ = h_on_n_result
         assert len(tree) == 5  # Base + A (Res1-A+H-A) + B (Res1-B+H-B) + C (CB-A) + D (CB-B)
+
+
+class TestHOnlyAlt:
+    """H-only alt group must merge with preceding residue's backbone state."""
+
+    def test_h_a_merges_with_preceding_residue(self, h_only_alt_result: tuple[HierarchyTree, list[str]]) -> None:
+        _, assignments = h_only_alt_result
+        # Res1-N(A) = row 0, Res2-H(A) = row 12 — should be same state
+        assert assignments[12] == assignments[0]
+
+    def test_h_b_merges_with_preceding_residue(self, h_only_alt_result: tuple[HierarchyTree, list[str]]) -> None:
+        _, assignments = h_only_alt_result
+        # Res1-N(B) = row 1, Res2-H(B) = row 13 — should be same state
+        assert assignments[13] == assignments[1]
+
+    def test_h_a_and_h_b_are_different_states(self, h_only_alt_result: tuple[HierarchyTree, list[str]]) -> None:
+        _, assignments = h_only_alt_result
+        assert assignments[12] != assignments[13]
+
+    def test_no_extra_states_created(self, h_only_alt_result: tuple[HierarchyTree, list[str]]) -> None:
+        tree, _ = h_only_alt_result
+        assert len(tree) == 3  # Base + A + B only
 
 
 class TestMultipleChains:
