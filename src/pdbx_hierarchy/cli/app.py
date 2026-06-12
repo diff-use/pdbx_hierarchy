@@ -2,6 +2,8 @@
 
 import typer
 
+from pdbx_hierarchy.cli.commands import coexist, create, show, state, validate
+
 app = typer.Typer(
     name="pdbx-hierarchy",
     help="Read, write, and modify PDBx/mmCIF files with hierarchical heterogeneity extensions.",
@@ -12,4 +14,11 @@ app = typer.Typer(
 @app.callback()
 def main() -> None:
     """PDBx Hierarchy CLI tool."""
-    pass
+
+
+app.command("show")(show.show)
+app.command("validate")(validate.validate)
+app.command("infer")(create.infer)
+app.command("import")(create.import_spec)
+app.add_typer(state.app, name="state")
+app.add_typer(coexist.app, name="coexist")

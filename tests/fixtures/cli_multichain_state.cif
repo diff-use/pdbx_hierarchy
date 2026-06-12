@@ -1,0 +1,23 @@
+data_MULTICHAIN_STATE
+#
+loop_
+_pdbx_heterogeneity_hierarchy.id
+_pdbx_heterogeneity_hierarchy.name
+_pdbx_heterogeneity_hierarchy.parent
+_pdbx_heterogeneity_hierarchy.details
+Base base_state . ?
+A state_a Base ?
+#
+loop_
+_atom_site.id
+_atom_site.label_asym_id
+_atom_site.label_seq_id
+_atom_site.label_atom_id
+_atom_site.auth_asym_id
+_atom_site.auth_seq_id
+_atom_site.pdbx_heterogeneity_id
+1 A 1 CA X 101 A
+2 A 2 CA X 102 A
+3 B 1 CA Y 201 A
+4 B 2 CA Y 202 A
+#
