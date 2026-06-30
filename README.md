@@ -108,18 +108,18 @@ Output-producing commands default to a non-clobbering `<name>_pdbx_N.cif`
 when `-o/--output` is omitted, and prompt before overwriting an existing file
 unless you pass `-y/--yes`.
 
-### Editing states
+### Editing hierarchy states
 
 ```bash
-pdbx-hierarchy state add      structure.cif --id C --name state_c --parent A
-pdbx-hierarchy state rename    structure.cif --id C --name folded
-pdbx-hierarchy state reparent  structure.cif --id C --parent B
-pdbx-hierarchy state remove    structure.cif --id C     # folds atoms/children into the parent
-pdbx-hierarchy state merge     structure.cif --ids A,B  # first id absorbs the rest
-pdbx-hierarchy state reassign  structure.cif            # canonicalize ids (Base, A, B, …)
+pdbx-hierarchy hierarchy add      structure.cif --id C --name state_c --parent A
+pdbx-hierarchy hierarchy rename    structure.cif --id C --name folded
+pdbx-hierarchy hierarchy reparent  structure.cif --id C --parent B
+pdbx-hierarchy hierarchy remove    structure.cif --id C     # folds atoms/children into the parent
+pdbx-hierarchy hierarchy merge     structure.cif --ids A,B  # first id absorbs the rest
+pdbx-hierarchy hierarchy reassign  structure.cif            # canonicalize ids (Base, A, B, …)
 
 # Split a state's atoms into two children by residue selection
-pdbx-hierarchy state split structure.cif --id A \
+pdbx-hierarchy hierarchy split structure.cif --id A \
     --select-a "B/10-12,14" --select-b "B/20-25"
 ```
 
@@ -132,11 +132,11 @@ assignment (a warning lists them).
 ### Editing coexistence rules
 
 ```bash
-pdbx-hierarchy coexist add    structure.cif --rule OR --state A --related B,C
+pdbx-hierarchy coexist add    structure.cif --rule OR --source A --related B,C
 pdbx-hierarchy coexist remove structure.cif --id 1
 ```
 
-State-editing commands keep everything in sync: atom assignments are folded or
+Hierarchy-editing commands keep everything in sync: atom assignments are folded or
 remapped, and coexistence references are rewritten (dropping rules that become
 degenerate). The whole file round-trips, so non-hierarchy data is preserved.
 

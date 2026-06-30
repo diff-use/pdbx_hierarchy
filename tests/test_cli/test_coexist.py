@@ -16,7 +16,7 @@ class TestCoexistAdd:
         cif = copy_fixture("full_hierarchy.cif")
         out = cif.with_name("out.cif")
         result = runner.invoke(
-            app, ["coexist", "add", str(cif), "--rule", "OR", "--state", "Base", "--related", "A", "-o", str(out)]
+            app, ["coexist", "add", str(cif), "--rule", "OR", "--source", "Base", "--related", "A", "-o", str(out)]
         )
         assert result.exit_code == 0
         table = read_coexistence(out)
@@ -29,7 +29,7 @@ class TestCoexistAdd:
         cif = copy_fixture("full_hierarchy.cif")
         result = runner.invoke(
             app,
-            ["coexist", "add", str(cif), "--rule", "OR", "--state", "Base", "--related", "Z", "-o", str(cif), "-y"],
+            ["coexist", "add", str(cif), "--rule", "OR", "--source", "Base", "--related", "Z", "-o", str(cif), "-y"],
         )
         assert result.exit_code == 1
 
@@ -38,7 +38,7 @@ class TestCoexistAdd:
     ) -> None:
         cif = copy_fixture("full_hierarchy.cif")
         result = runner.invoke(
-            app, ["coexist", "add", str(cif), "--rule", "MAYBE", "--state", "Base", "--related", "A", "-o", str(cif)]
+            app, ["coexist", "add", str(cif), "--rule", "MAYBE", "--source", "Base", "--related", "A", "-o", str(cif)]
         )
         assert result.exit_code != 0
 
@@ -48,7 +48,7 @@ class TestCoexistAdd:
         cif = copy_fixture("full_hierarchy.cif")
         result = runner.invoke(
             app,
-            ["coexist", "add", str(cif), "--rule", "OR", "--state", "A", "--related", "A,Base", "-o", str(cif), "-y"],
+            ["coexist", "add", str(cif), "--rule", "OR", "--source", "A", "--related", "A,Base", "-o", str(cif), "-y"],
         )
         assert result.exit_code == 1
         assert "self-reference" in (result.output + result.stderr)
@@ -59,7 +59,7 @@ class TestCoexistAdd:
         cif = copy_fixture("full_hierarchy.cif")
         out = cif.with_name("out.cif")
         result = runner.invoke(
-            app, ["coexist", "add", str(cif), "--rule", "OR", "--state", "Base", "--related", "A,A", "-o", str(out)]
+            app, ["coexist", "add", str(cif), "--rule", "OR", "--source", "Base", "--related", "A,A", "-o", str(out)]
         )
         assert result.exit_code == 0, result.output
         table = read_coexistence(out)
@@ -72,7 +72,8 @@ class TestCoexistAdd:
     ) -> None:
         cif = copy_fixture("bad_atom_site_refs.cif")
         result = runner.invoke(
-            app, ["coexist", "add", str(cif), "--rule", "OR", "--state", "Base", "--related", "A", "-o", str(cif), "-y"]
+            app,
+            ["coexist", "add", str(cif), "--rule", "OR", "--source", "Base", "--related", "A", "-o", str(cif), "-y"],
         )
         assert result.exit_code == 1
 

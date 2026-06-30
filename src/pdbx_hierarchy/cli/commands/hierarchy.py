@@ -1,4 +1,4 @@
-"""The ``state`` sub-app: add, remove, rename, reparent, merge, split, and reassign states."""
+"""The ``hierarchy`` sub-app: add, remove, rename, reparent, merge, split, and reassign hierarchy states."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ from pdbx_hierarchy.io.writer import (
 from pdbx_hierarchy.models.hierarchy import HierarchyState
 from pdbx_hierarchy.models.id_generator import HierarchyIdGenerator
 
-app = typer.Typer(name="state", help="Add, remove, rename, reparent, merge, split, or reassign hierarchy states.")
+app = typer.Typer(name="hierarchy", help="Add, remove, rename, reparent, merge, split, or reassign hierarchy states.")
 
 _FileArg = Annotated[Path, typer.Argument(help="mmCIF file to modify.")]
 _OutputOpt = Annotated[Path | None, typer.Option("--output", "-o", help="Output path (default: <name>_pdbx_N).")]
@@ -62,7 +62,7 @@ def _remap_coexistence_in_block(block: object, id_map: dict[str, str]) -> None:
 @app.command("add")
 def add(
     file: _FileArg,
-    state_id: Annotated[str, typer.Option("--id", help="Id for the new state.")],
+    hier_id: Annotated[str, typer.Option("--id", help="Id for the new state.")],
     name: Annotated[str, typer.Option("--name", help="Name for the new state.")],
     parent: Annotated[str, typer.Option("--parent", help="Parent state id.")],
     details: Annotated[str | None, typer.Option("--details", help="Optional description.")] = None,
@@ -74,17 +74,17 @@ def add(
         doc, block = load_document(file)
         tree = read_hierarchy(block)
         validate_file(block, raise_on_error=True)
-        tree.add_state(HierarchyState(id=state_id, name=name, parent=parent, details=details))
+        tree.add_state(HierarchyState(id=hier_id, name=name, parent=parent, details=details))
         out = resolve_output(file, output, yes=yes)
         write_hierarchy(block, tree, overwrite=True)
         write_mmcif(doc, out)
-        typer.echo(f"Added state {state_id!r}; wrote {out}")
+        typer.echo(f"Added state {hier_id!r}; wrote {out}")
 
 
 @app.command("remove")
 def remove(
     file: _FileArg,
-    state_id: Annotated[str, typer.Option("--id", help="Id of the state to remove.")],
+    hier_id: Annotated[str, typer.Option("--id", help="Id of the state to remove.")],
     output: _OutputOpt = None,
     yes: _YesOpt = False,
 ) -> None:
@@ -94,36 +94,36 @@ def remove(
         tree = read_hierarchy(block)
         validate_file(block, raise_on_error=True)
 
-        parent = tree.get_state(state_id).parent
+        parent = tree.get_state(hier_id).parent
         if parent is None:
-            raise PdbxValidationError(f"cannot remove root state {state_id!r}")
+            raise PdbxValidationError(f"cannot remove root state {hier_id!r}")
 
         # Re-parent children to the grandparent, then remove (now childless) state.
-        for child in tree.get_children(state_id):
+        for child in tree.get_children(hier_id):
             tree.update_state(child.id, parent=parent)
-        tree.remove_state(state_id)
+        tree.remove_state(hier_id)
 
         # Fold the removed state's atoms up into its parent so nothing dangles.
         assignments = _read_assignments_optional(block)
         if assignments is not None:
-            moved = sum(1 for atom_id in assignments if atom_id == state_id)
-            assignments = [parent if atom_id == state_id else atom_id for atom_id in assignments]
+            moved = sum(1 for atom_id in assignments if atom_id == hier_id)
+            assignments = [parent if atom_id == hier_id else atom_id for atom_id in assignments]
             if moved:
-                typer.echo(f"Reassigned {moved} atom(s) from {state_id!r} to parent {parent!r}")
+                typer.echo(f"Reassigned {moved} atom(s) from {hier_id!r} to parent {parent!r}")
 
         out = resolve_output(file, output, yes=yes)
         write_hierarchy(block, tree, overwrite=True)
         if assignments is not None:
             write_atom_site_heterogeneity_ids(block, assignments, overwrite=True)
-        _remap_coexistence_in_block(block, {state_id: parent})
+        _remap_coexistence_in_block(block, {hier_id: parent})
         write_mmcif(doc, out)
-        typer.echo(f"Removed state {state_id!r}; wrote {out}")
+        typer.echo(f"Removed state {hier_id!r}; wrote {out}")
 
 
 @app.command("rename")
 def rename(
     file: _FileArg,
-    state_id: Annotated[str, typer.Option("--id", help="Id of the state to rename.")],
+    hier_id: Annotated[str, typer.Option("--id", help="Id of the state to rename.")],
     name: Annotated[str, typer.Option("--name", help="New name for the state.")],
     output: _OutputOpt = None,
     yes: _YesOpt = False,
@@ -133,17 +133,17 @@ def rename(
         doc, block = load_document(file)
         tree = read_hierarchy(block)
         validate_file(block, raise_on_error=True)
-        tree.update_state(state_id, name=name)
+        tree.update_state(hier_id, name=name)
         out = resolve_output(file, output, yes=yes)
         write_hierarchy(block, tree, overwrite=True)
         write_mmcif(doc, out)
-        typer.echo(f"Renamed state {state_id!r} to {name!r}; wrote {out}")
+        typer.echo(f"Renamed state {hier_id!r} to {name!r}; wrote {out}")
 
 
 @app.command("reparent")
 def reparent(
     file: _FileArg,
-    state_id: Annotated[str, typer.Option("--id", help="Id of the state to move.")],
+    hier_id: Annotated[str, typer.Option("--id", help="Id of the state to move.")],
     parent: Annotated[str, typer.Option("--parent", help="Id of the new parent state.")],
     output: _OutputOpt = None,
     yes: _YesOpt = False,
@@ -159,19 +159,19 @@ def reparent(
         tree = read_hierarchy(block)
         validate_file(block, raise_on_error=True)
 
-        if tree.get_state(state_id).parent is None:
-            raise PdbxValidationError(f"cannot reparent the root state {state_id!r}")
+        if tree.get_state(hier_id).parent is None:
+            raise PdbxValidationError(f"cannot reparent the root state {hier_id!r}")
         if not tree.contains(parent):
             raise PdbxValidationError(f"unknown parent state {parent!r}")
 
         # update_state re-validates the tree, so a move that would create a cycle
         # (new parent is the state itself or one of its descendants) raises here.
-        tree.update_state(state_id, parent=parent)
+        tree.update_state(hier_id, parent=parent)
 
         out = resolve_output(file, output, yes=yes)
         write_hierarchy(block, tree, overwrite=True)
         write_mmcif(doc, out)
-        typer.echo(f"Reparented state {state_id!r} under {parent!r}; wrote {out}")
+        typer.echo(f"Reparented state {hier_id!r} under {parent!r}; wrote {out}")
 
 
 @app.command("merge")
@@ -229,7 +229,7 @@ def merge(
 @app.command("split")
 def split(
     file: _FileArg,
-    state_id: Annotated[str, typer.Option("--id", help="Id of the state to split.")],
+    hier_id: Annotated[str, typer.Option("--id", help="Id of the state to split.")],
     select_a: Annotated[str, typer.Option("--select-a", help="Residue selection for the first child.")],
     select_b: Annotated[str, typer.Option("--select-b", help="Residue selection for the second child.")],
     name_a: Annotated[str | None, typer.Option("--name-a", help="Name for the first child (default: its id).")] = None,
@@ -253,9 +253,9 @@ def split(
         if len(residue_keys) != len(assignments):
             raise PdbxValidationError("atom_site residue columns and assignment column have different lengths")
 
-        rows_in_state = [i for i, atom_id in enumerate(assignments) if atom_id == state_id]
+        rows_in_state = [i for i, atom_id in enumerate(assignments) if atom_id == hier_id]
         if not rows_in_state:
-            raise PdbxValidationError(f"state {state_id!r} has no atoms to split")
+            raise PdbxValidationError(f"state {hier_id!r} has no atoms to split")
 
         chains = {residue_keys[i][0] for i in rows_in_state}
         sel_a = parse_selection(select_a, chains)
@@ -264,26 +264,26 @@ def split(
         non_numeric = sorted({residue_keys[i] for i in rows_in_state if _residue_key_int(residue_keys[i]) is None})
         if non_numeric:
             warn(
-                f"{len(non_numeric)} residue(s) in {state_id!r} have non-numeric ids and cannot be selected; "
-                f"they keep their assignment to {state_id!r}: {non_numeric}"
+                f"{len(non_numeric)} residue(s) in {hier_id!r} have non-numeric ids and cannot be selected; "
+                f"they keep their assignment to {hier_id!r}: {non_numeric}"
             )
 
         present = _present_residues(residue_keys, rows_in_state)
         _warn_missing(sel_a - present, "--select-a")
         _warn_missing(sel_b - present, "--select-b")
         if not (sel_a & present) and not (sel_b & present):
-            raise PdbxValidationError(f"neither --select-a nor --select-b matched any atom in state {state_id!r}")
+            raise PdbxValidationError(f"neither --select-a nor --select-b matched any atom in state {hier_id!r}")
         overlap = sel_a & sel_b & present
         if overlap:
             warn(f"residues in both selections are assigned to --select-a: {sorted(overlap)}")
         unselected = present - sel_a - sel_b
         if unselected:
-            warn(f"residues matched by neither selection keep their assignment to {state_id!r}: {sorted(unselected)}")
+            warn(f"residues matched by neither selection keep their assignment to {hier_id!r}: {sorted(unselected)}")
 
         generator = HierarchyIdGenerator(tree)
         child_a, child_b = next(generator), next(generator)
-        tree.add_state(HierarchyState(id=child_a, name=name_a or child_a, parent=state_id, details=None))
-        tree.add_state(HierarchyState(id=child_b, name=name_b or child_b, parent=state_id, details=None))
+        tree.add_state(HierarchyState(id=child_a, name=name_a or child_a, parent=hier_id, details=None))
+        tree.add_state(HierarchyState(id=child_b, name=name_b or child_b, parent=hier_id, details=None))
 
         for i in rows_in_state:
             key = _residue_key_int(residue_keys[i])
@@ -298,7 +298,7 @@ def split(
         write_hierarchy(block, tree, overwrite=True)
         write_atom_site_heterogeneity_ids(block, assignments, overwrite=True)
         write_mmcif(doc, out)
-        typer.echo(f"Split {state_id!r} into {child_a!r} and {child_b!r}; wrote {out}")
+        typer.echo(f"Split {hier_id!r} into {child_a!r} and {child_b!r}; wrote {out}")
 
 
 @app.command("reassign")

@@ -1,4 +1,4 @@
-"""Tests for the ``state`` sub-app (add, remove, rename, reparent, merge, split, reassign)."""
+"""Tests for the ``hierarchy`` sub-app (add, remove, rename, reparent, merge, split, reassign)."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ class TestAdd:
         cif = copy_fixture("full_hierarchy.cif")
         out = cif.with_name("out.cif")
         result = runner.invoke(
-            app, ["state", "add", str(cif), "--id", "C", "--name", "state_c", "--parent", "Base", "-o", str(out)]
+            app, ["hierarchy", "add", str(cif), "--id", "C", "--name", "state_c", "--parent", "Base", "-o", str(out)]
         )
         assert result.exit_code == 0
         assert "C" in {s.id for s in read_hierarchy(out).states}
@@ -36,7 +36,7 @@ class TestAdd:
     ) -> None:
         cif = copy_fixture("full_hierarchy.cif")
         result = runner.invoke(
-            app, ["state", "add", str(cif), "--id", "C", "--name", "state_c", "--parent", "Z", "-o", str(cif), "-y"]
+            app, ["hierarchy", "add", str(cif), "--id", "C", "--name", "state_c", "--parent", "Z", "-o", str(cif), "-y"]
         )
         assert result.exit_code == 1
 
@@ -47,14 +47,14 @@ class TestRemove:
     ) -> None:
         cif = copy_fixture("cli_multichain_state.cif")
         out = cif.with_name("out.cif")
-        result = runner.invoke(app, ["state", "remove", str(cif), "--id", "A", "-o", str(out)])
+        result = runner.invoke(app, ["hierarchy", "remove", str(cif), "--id", "A", "-o", str(out)])
         assert result.exit_code == 0
         assert {s.id for s in read_hierarchy(out).states} == {"Base"}
         assert set(read_atom_site_heterogeneity_ids(out)) == {"Base"}
 
     def test_remove_root_fails(self, runner: CliRunner, app: typer.Typer, copy_fixture: Callable[[str], Path]) -> None:
         cif = copy_fixture("cli_multichain_state.cif")
-        result = runner.invoke(app, ["state", "remove", str(cif), "--id", "Base", "-o", str(cif), "-y"])
+        result = runner.invoke(app, ["hierarchy", "remove", str(cif), "--id", "Base", "-o", str(cif), "-y"])
         assert result.exit_code == 1
 
 
@@ -62,13 +62,16 @@ class TestRename:
     def test_rename(self, runner: CliRunner, app: typer.Typer, copy_fixture: Callable[[str], Path]) -> None:
         cif = copy_fixture("full_hierarchy.cif")
         out = cif.with_name("out.cif")
-        result = runner.invoke(app, ["state", "rename", str(cif), "--id", "A", "--name", "renamed_a", "-o", str(out)])
+        result = runner.invoke(
+            app, ["hierarchy", "rename", str(cif), "--id", "A", "--name", "renamed_a", "-o", str(out)]
+        )
         assert result.exit_code == 0
         assert read_hierarchy(out).get_state("A").name == "renamed_a"
 
 
-def _import_tree(runner: CliRunner, app: typer.Typer, copy_fixture: Callable[[str], Path], tmp_path: Path,
-                 tree: HierarchyTree) -> Path:
+def _import_tree(
+    runner: CliRunner, app: typer.Typer, copy_fixture: Callable[[str], Path], tmp_path: Path, tree: HierarchyTree
+) -> Path:
     """Write ``tree`` onto a plain fixture and return the resulting file path."""
     cif = copy_fixture("atom_site_no_hierarchy.cif")
     spec = tmp_path / "spec.json"
@@ -97,7 +100,7 @@ class TestReparent:
     ) -> None:
         cif = _import_tree(runner, app, copy_fixture, tmp_path, self._four_states())
         out = tmp_path / "out.cif"
-        result = runner.invoke(app, ["state", "reparent", str(cif), "--id", "C", "--parent", "B", "-o", str(out)])
+        result = runner.invoke(app, ["hierarchy", "reparent", str(cif), "--id", "C", "--parent", "B", "-o", str(out)])
         assert result.exit_code == 0, result.output
         assert read_hierarchy(out).get_state("C").parent == "B"
 
@@ -105,7 +108,7 @@ class TestReparent:
         self, runner: CliRunner, app: typer.Typer, copy_fixture: Callable[[str], Path], tmp_path: Path
     ) -> None:
         cif = _import_tree(runner, app, copy_fixture, tmp_path, self._four_states())
-        args = ["state", "reparent", str(cif), "--id", "Base", "--parent", "A", "-o", str(cif), "-y"]
+        args = ["hierarchy", "reparent", str(cif), "--id", "Base", "--parent", "A", "-o", str(cif), "-y"]
         result = runner.invoke(app, args)
         assert result.exit_code == 1
         assert "root" in (result.output + result.stderr)
@@ -114,7 +117,9 @@ class TestReparent:
         self, runner: CliRunner, app: typer.Typer, copy_fixture: Callable[[str], Path], tmp_path: Path
     ) -> None:
         cif = _import_tree(runner, app, copy_fixture, tmp_path, self._four_states())
-        result = runner.invoke(app, ["state", "reparent", str(cif), "--id", "C", "--parent", "Z", "-o", str(cif), "-y"])
+        result = runner.invoke(
+            app, ["hierarchy", "reparent", str(cif), "--id", "C", "--parent", "Z", "-o", str(cif), "-y"]
+        )
         assert result.exit_code == 1
         assert "unknown parent" in (result.output + result.stderr)
 
@@ -123,7 +128,9 @@ class TestReparent:
     ) -> None:
         # Moving A beneath its own descendant C would create a cycle.
         cif = _import_tree(runner, app, copy_fixture, tmp_path, self._four_states())
-        result = runner.invoke(app, ["state", "reparent", str(cif), "--id", "A", "--parent", "C", "-o", str(cif), "-y"])
+        result = runner.invoke(
+            app, ["hierarchy", "reparent", str(cif), "--id", "A", "--parent", "C", "-o", str(cif), "-y"]
+        )
         assert result.exit_code == 1
 
 
@@ -133,7 +140,7 @@ class TestMerge:
     ) -> None:
         cif = _infer(runner, app, copy_fixture, "assign_backbone_merge.cif", tmp_path)
         out = tmp_path / "merged.cif"
-        result = runner.invoke(app, ["state", "merge", str(cif), "--ids", "A,B", "-o", str(out)])
+        result = runner.invoke(app, ["hierarchy", "merge", str(cif), "--ids", "A,B", "-o", str(out)])
         assert result.exit_code == 0
         assert set(read_atom_site_heterogeneity_ids(out)) == {"A"}
         assert {s.id for s in read_hierarchy(out).states} == {"Base", "A"}
@@ -142,14 +149,14 @@ class TestMerge:
         self, runner: CliRunner, app: typer.Typer, copy_fixture: Callable[[str], Path], tmp_path: Path
     ) -> None:
         cif = _infer(runner, app, copy_fixture, "assign_backbone_merge.cif", tmp_path)
-        result = runner.invoke(app, ["state", "merge", str(cif), "--ids", "A", "-o", str(cif), "-y"])
+        result = runner.invoke(app, ["hierarchy", "merge", str(cif), "--ids", "A", "-o", str(cif), "-y"])
         assert result.exit_code == 1
 
     def test_merge_duplicate_ids_fails(
         self, runner: CliRunner, app: typer.Typer, copy_fixture: Callable[[str], Path]
     ) -> None:
         cif = copy_fixture("full_hierarchy.cif")
-        result = runner.invoke(app, ["state", "merge", str(cif), "--ids", "A,A", "-o", str(cif), "-y"])
+        result = runner.invoke(app, ["hierarchy", "merge", str(cif), "--ids", "A,A", "-o", str(cif), "-y"])
         assert result.exit_code == 1
         assert "distinct ids" in (result.output + result.stderr)
 
@@ -161,7 +168,7 @@ class TestSplit:
         cif = _infer(runner, app, copy_fixture, "assign_backbone_merge.cif", tmp_path)
         out = tmp_path / "split.cif"
         result = runner.invoke(
-            app, ["state", "split", str(cif), "--id", "A", "--select-a", "1", "--select-b", "2", "-o", str(out)]
+            app, ["hierarchy", "split", str(cif), "--id", "A", "--select-a", "1", "--select-b", "2", "-o", str(out)]
         )
         assert result.exit_code == 0, result.output
         tree = read_hierarchy(out)
@@ -173,7 +180,8 @@ class TestSplit:
     ) -> None:
         cif = copy_fixture("cli_multichain_state.cif")
         result = runner.invoke(
-            app, ["state", "split", str(cif), "--id", "A", "--select-a", "1", "--select-b", "2", "-o", str(cif), "-y"]
+            app,
+            ["hierarchy", "split", str(cif), "--id", "A", "--select-a", "1", "--select-b", "2", "-o", str(cif), "-y"],
         )
         assert result.exit_code == 1
         assert "Ambiguous" in (result.output + result.stderr)
@@ -185,7 +193,19 @@ class TestSplit:
         out = cif.with_name("out.cif")
         result = runner.invoke(
             app,
-            ["state", "split", str(cif), "--id", "A", "--select-a", "A/1,A/2", "--select-b", "B/1,B/2", "-o", str(out)],
+            [
+                "hierarchy",
+                "split",
+                str(cif),
+                "--id",
+                "A",
+                "--select-a",
+                "A/1,A/2",
+                "--select-b",
+                "B/1,B/2",
+                "-o",
+                str(out),
+            ],
         )
         assert result.exit_code == 0, result.output
         assert len(read_hierarchy(out).get_children("A")) == 2
@@ -198,7 +218,7 @@ class TestSplit:
         result = runner.invoke(
             app,
             [
-                "state", "split", str(cif), "--id", "A",
+                "hierarchy", "split", str(cif), "--id", "A",
                 "--select-a", "X/101,X/102", "--select-b", "Y/201,Y/202", "--auth", "-o", str(out),
             ],
         )  # fmt: skip
@@ -210,7 +230,20 @@ class TestSplit:
         cif = copy_fixture("cli_multichain_state.cif")
         result = runner.invoke(
             app,
-            ["state", "split", str(cif), "--id", "A", "--select-a", "A/9", "--select-b", "B/9", "-o", str(cif), "-y"],
+            [
+                "hierarchy",
+                "split",
+                str(cif),
+                "--id",
+                "A",
+                "--select-a",
+                "A/9",
+                "--select-b",
+                "B/9",
+                "-o",
+                str(cif),
+                "-y",
+            ],
         )
         assert result.exit_code == 1
 
@@ -221,7 +254,7 @@ class TestSplit:
         out = cif.with_name("out.cif")
         result = runner.invoke(
             app,
-            ["state", "split", str(cif), "--id", "A", "--select-a", "A/1,A/9", "--select-b", "B/1", "-o", str(out)],
+            ["hierarchy", "split", str(cif), "--id", "A", "--select-a", "A/1,A/9", "--select-b", "B/1", "-o", str(out)],
         )
         assert result.exit_code == 0, result.output
         assert "Warning" in (result.output + result.stderr)
@@ -234,7 +267,7 @@ class TestSplit:
         # Cover only chain A; chain B's residues are matched by neither selection.
         result = runner.invoke(
             app,
-            ["state", "split", str(cif), "--id", "A", "--select-a", "A/1", "--select-b", "A/2", "-o", str(out)],
+            ["hierarchy", "split", str(cif), "--id", "A", "--select-a", "A/1", "--select-b", "A/2", "-o", str(out)],
         )
         assert result.exit_code == 0, result.output
         assert "neither selection" in (result.output + result.stderr)
@@ -265,7 +298,7 @@ class TestReassign:
         src = copy_fixture("atom_site_no_hierarchy.cif")
         cif = _write_named_hierarchy(runner, app, src, tmp_path)
         out = tmp_path / "reassigned.cif"
-        result = runner.invoke(app, ["state", "reassign", str(cif), "-o", str(out)])
+        result = runner.invoke(app, ["hierarchy", "reassign", str(cif), "-o", str(out)])
         assert result.exit_code == 0
         assert {s.id for s in read_hierarchy(out).states} == {"Base", "A", "B"}
 
@@ -275,7 +308,7 @@ class TestReassign:
         src = copy_fixture("atom_site_no_hierarchy.cif")
         cif = _write_named_hierarchy(runner, app, src, tmp_path)
         out = tmp_path / "reassigned.cif"
-        result = runner.invoke(app, ["state", "reassign", str(cif), "--preserve-named", "-o", str(out)])
+        result = runner.invoke(app, ["hierarchy", "reassign", str(cif), "--preserve-named", "-o", str(out)])
         assert result.exit_code == 0
         ids = {s.id for s in read_hierarchy(out).states}
         assert "M1" in ids  # non-canonical id preserved

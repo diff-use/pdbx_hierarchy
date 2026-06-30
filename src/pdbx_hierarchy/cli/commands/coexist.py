@@ -14,7 +14,7 @@ from pdbx_hierarchy.io.validation import validate_file
 from pdbx_hierarchy.io.writer import write_coexistence, write_mmcif
 from pdbx_hierarchy.models.coexistence import CoexistenceRule, CoexistenceTable, StateCoexistence
 
-app = typer.Typer(name="coexist", help="Add or remove state coexistence rules.")
+app = typer.Typer(name="coexist", help="Add or remove coexistence rules between hierarchy states.")
 
 _FileArg = Annotated[Path, typer.Argument(help="mmCIF file to modify.")]
 _OutputOpt = Annotated[Path | None, typer.Option("--output", "-o", help="Output path (default: <name>_pdbx_N).")]
@@ -25,7 +25,7 @@ _YesOpt = Annotated[bool, typer.Option("--yes", "-y", help="Skip the overwrite p
 def add(
     file: _FileArg,
     rule: Annotated[CoexistenceRule, typer.Option("--rule", help="Coexistence rule type.")],
-    state: Annotated[str, typer.Option("--state", help="Source state id (heterogeneity_id).")],
+    source: Annotated[str, typer.Option("--source", help="Source hierarchy state id (heterogeneity_id).")],
     related: Annotated[str, typer.Option("--related", help="Comma-separated related state ids.")],
     description: Annotated[str | None, typer.Option("--description", help="Optional description.")] = None,
     output: _OutputOpt = None,
@@ -45,15 +45,15 @@ def add(
         # degenerate rules the remap path would otherwise silently rewrite/drop,
         # so reject them at the source instead of writing them out.
         related_ids = list(dict.fromkeys(related_ids))
-        if state in related_ids:
-            raise PdbxValidationError(f"--related must not contain the source state {state!r} (self-reference)")
+        if source in related_ids:
+            raise PdbxValidationError(f"--related must not contain the source state {source!r} (self-reference)")
 
         next_id = max((existing.id for existing in table.rules), default=0) + 1
         table.add_rule(
             StateCoexistence(
                 id=next_id,
                 rule=rule,
-                heterogeneity_id=state,
+                heterogeneity_id=source,
                 heterogeneity_ids=related_ids,
                 description=description,
             )
