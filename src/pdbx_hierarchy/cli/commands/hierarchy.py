@@ -10,6 +10,7 @@ import typer
 from pdbx_hierarchy.cli.commands._utils import (
     error_handler,
     load_document,
+    merge_states,
     parse_selection,
     read_atom_residue_keys,
     reassign_ids,
@@ -196,19 +197,7 @@ def merge(
         if len(id_list) < 2:
             raise PdbxValidationError("merge requires at least two distinct ids, e.g. --ids A,B")
         target = id_list[0]
-        if not tree.contains(target):
-            raise PdbxValidationError(f"unknown state {target!r}")
-
-        merge_map: dict[str, str] = {}
-        for other in id_list[1:]:
-            if not tree.contains(other):
-                raise PdbxValidationError(f"unknown state {other!r}")
-            if assignments is not None:
-                assignments = [target if atom_id == other else atom_id for atom_id in assignments]
-            for child in tree.get_children(other):
-                tree.update_state(child.id, parent=target)
-            tree.remove_state(other)
-            merge_map[other] = target
+        assignments, merge_map = merge_states(tree, assignments, target, id_list[1:])
 
         if reassign:
             mapping = reassign_ids(tree)

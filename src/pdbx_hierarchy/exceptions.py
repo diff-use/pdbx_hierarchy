@@ -58,3 +58,13 @@ class AtomSiteReferenceError(PdbxValidationError):
     This occurs when an atom's heterogeneity_id does not match any
     state defined in the hierarchy table.
     """
+
+
+class ClashAnalysisError(PdbxValidationError):
+    """Raised when clash analysis or report handling fails.
+
+    Examples include:
+    - A clash report with an unsupported or missing schema version
+    - A report referencing hierarchy states that no longer exist in the file
+    - Malformed report data that cannot be applied
+    """

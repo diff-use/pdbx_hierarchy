@@ -140,6 +140,42 @@ Hierarchy-editing commands keep everything in sync: atom assignments are folded 
 remapped, and coexistence references are rewritten (dropping rules that become
 degenerate). The whole file round-trips, so non-hierarchy data is preserved.
 
+### Detecting and mitigating steric clashes
+
+Two atoms in states that can be present at the same time may sterically clash — a
+modeling problem, unlike an expected clash between genuine alternatives. The
+`clash` sub-app finds these and proposes a fix per actionable clash: **merge** two
+states into one coupled conformation, or add a **NOT** coexistence rule.
+
+```bash
+# Detect clashes and write a curatable JSON report
+pdbx-hierarchy clash detect structure.cif --report clashes.json
+
+# ... optionally edit clashes.json to disable individual proposals ...
+
+# Apply the enabled proposals
+pdbx-hierarchy clash apply structure.cif --report clashes.json -o fixed.cif
+```
+
+`detect` options: `--tolerance` (minimum vdW overlap in Å, default `0.4`),
+`--not-only` (propose NOT rules only, never merges), `--symmetry` (include crystal
+symmetry-mate contacts; default is the asymmetric unit only), and `--auth`
+(`auth_*` residue numbering).
+
+How clashes are classified:
+
+- The analysis is driven by the **hierarchy labels**, not `label_alt_id`. Detection
+  runs on an altloc-sanitized copy; the output keeps its original `label_alt_id`.
+- Covalent bonds and angle pairs are excluded via connectivity inferred from the
+  hierarchy (atoms of mutually exclusive states are never treated as bonded), so
+  disulfides and metal coordination are not reported as clashes.
+- A clash is **benign** if the two states are already mutually exclusive (a NOT rule
+  on them or their ancestors), or one atom has an alternative conformation in the
+  other state's branch. Clashes involving **Base**, an ancestor/descendant pair, or
+  the same state are reported as **warnings** (never auto-mitigated).
+- Each proposal in the report has an `"enabled"` flag; `apply` acts only on enabled
+  entries, so you can curate the JSON before applying.
+
 ## Python API
 
 ```python

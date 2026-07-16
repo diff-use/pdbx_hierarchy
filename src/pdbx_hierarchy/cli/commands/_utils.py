@@ -264,6 +264,53 @@ def reassign_ids(tree: HierarchyTree, *, preserve_named: bool = False) -> dict[s
     return mapping
 
 
+def merge_states(
+    tree: HierarchyTree,
+    assignments: list[str] | None,
+    target: str,
+    others: list[str],
+) -> tuple[list[str] | None, dict[str, str]]:
+    """Merge each state in ``others`` into ``target``, mutating ``tree`` in place.
+
+    The target absorbs each other state's atom assignments and re-parents its
+    children to the target; the (now childless) other state is then removed. This
+    is the shared mechanic behind the ``hierarchy merge`` command and clash-driven
+    merges (``clash apply``), so both stay in sync.
+
+    Note: this merges *existing* HierarchyState nodes. It is unrelated to the infer
+    pipeline's ``assignment._apply_merges``, which unions atom rows while building a
+    tree from scratch.
+
+    Args:
+        tree: The hierarchy tree to mutate.
+        assignments: Per-atom state ids to rewrite, or None to skip assignment
+            rewriting (e.g. a file with no atom assignment column).
+        target: The state id that absorbs the others; must already exist.
+        others: State ids to merge into ``target``; each must already exist.
+
+    Returns:
+        Tuple of (updated assignments or None, merge map from each merged id to
+        ``target``). The returned assignments list is a new list; the input is
+        not mutated.
+
+    Raises:
+        PdbxValidationError: If ``target`` or any id in ``others`` is not in the tree.
+    """
+    if not tree.contains(target):
+        raise PdbxValidationError(f"unknown state {target!r}")
+    merge_map: dict[str, str] = {}
+    for other in others:
+        if not tree.contains(other):
+            raise PdbxValidationError(f"unknown state {other!r}")
+        if assignments is not None:
+            assignments = [target if atom_id == other else atom_id for atom_id in assignments]
+        for child in tree.get_children(other):
+            tree.update_state(child.id, parent=target)
+        tree.remove_state(other)
+        merge_map[other] = target
+    return assignments, merge_map
+
+
 def remap_coexistence(table: CoexistenceTable, id_map: dict[str, str]) -> tuple[CoexistenceTable, list[str]]:
     """Rewrite coexistence references through an id map, dropping degenerate rules.
 

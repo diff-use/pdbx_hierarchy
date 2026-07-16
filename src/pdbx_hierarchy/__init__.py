@@ -3,8 +3,17 @@
 from importlib.metadata import version
 
 from pdbx_hierarchy.assignment import assign_from_alt_ids
+from pdbx_hierarchy.clash import (
+    Clash,
+    ClashReport,
+    MergeProposal,
+    NotProposal,
+    classify_clashes,
+    detect_clashes,
+)
 from pdbx_hierarchy.exceptions import (
     AtomSiteReferenceError,
+    ClashAnalysisError,
     HierarchyNotFoundError,
     InvalidCoexistenceError,
     InvalidHierarchyError,
@@ -46,6 +55,7 @@ __all__ = [
     "InvalidHierarchyError",
     "InvalidCoexistenceError",
     "AtomSiteReferenceError",
+    "ClashAnalysisError",
     # Models
     "HierarchyState",
     "HierarchyTree",
@@ -55,6 +65,13 @@ __all__ = [
     "HierarchyIdGenerator",
     # Assignment
     "assign_from_alt_ids",
+    # Clash analysis
+    "detect_clashes",
+    "classify_clashes",
+    "Clash",
+    "ClashReport",
+    "MergeProposal",
+    "NotProposal",
     # I/O
     "read_mmcif",
     "has_hierarchy",

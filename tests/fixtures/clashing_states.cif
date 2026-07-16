@@ -1,0 +1,78 @@
+data_CLASHING_STATES
+#
+# Synthetic structure for clash-detection tests. Atoms are grouped into spatially
+# separated clusters (~50 A apart in x) so each scenario is isolated:
+#   res 1/5   : binary x binary -> merge A+D, B+C   (A@res1 clashes C@res5)
+#   res 10/12 : res10 has 3 alts (E,F,G) -> NOT rule (E@res10 clashes H@res12)
+#   res 20/25 : benign; res20 has CB in both K and L, so K@res20 vs L@res25 is an alternative
+#   res 30/31 : Base O clashes state M -> ancestor warning
+#   res 40/41 : two Base atoms clash -> same-state warning
+#   res 50/51 : Base C-N at 1.33 A -> covalent bond, excluded
+#   res 60/61 : Base S-S at 2.05 A -> disulfide, excluded
+#
+_cell.length_a    500.0
+_cell.length_b    500.0
+_cell.length_c    500.0
+_cell.angle_alpha 90.0
+_cell.angle_beta  90.0
+_cell.angle_gamma 90.0
+_symmetry.space_group_name_H-M 'P 1'
+#
+loop_
+_pdbx_heterogeneity_hierarchy.id
+_pdbx_heterogeneity_hierarchy.name
+_pdbx_heterogeneity_hierarchy.parent
+_pdbx_heterogeneity_hierarchy.details
+Base base_state . .
+A state_A Base .
+B state_B Base .
+C state_C Base .
+D state_D Base .
+E state_E Base .
+F state_F Base .
+G state_G Base .
+H state_H Base .
+I state_I Base .
+K state_K Base .
+L state_L Base .
+M state_M Base .
+#
+loop_
+_atom_site.group_PDB
+_atom_site.id
+_atom_site.type_symbol
+_atom_site.label_atom_id
+_atom_site.label_comp_id
+_atom_site.label_asym_id
+_atom_site.label_seq_id
+_atom_site.label_alt_id
+_atom_site.Cartn_x
+_atom_site.Cartn_y
+_atom_site.Cartn_z
+_atom_site.occupancy
+_atom_site.B_iso_or_equiv
+_atom_site.auth_seq_id
+_atom_site.auth_asym_id
+_atom_site.pdbx_PDB_model_num
+_atom_site.pdbx_heterogeneity_id
+ATOM 1  C CB ALA A 1  A 0.00   0.00  0.00 0.50 20.0 1  A 1 A
+ATOM 2  C CB ALA A 1  B 0.00   10.00 0.00 0.50 20.0 1  A 1 B
+ATOM 3  C CB ALA A 5  A 2.50   0.00  0.00 0.50 20.0 5  A 1 C
+ATOM 4  C CB ALA A 5  B 5.00   10.00 0.00 0.50 20.0 5  A 1 D
+ATOM 5  C CB ALA A 10 A 50.00  0.00  0.00 0.33 20.0 10 A 1 E
+ATOM 6  C CB ALA A 10 B 50.00  10.00 0.00 0.33 20.0 10 A 1 F
+ATOM 7  C CB ALA A 10 C 50.00  20.00 0.00 0.33 20.0 10 A 1 G
+ATOM 8  C CB ALA A 12 A 52.50  0.00  0.00 0.50 20.0 12 A 1 H
+ATOM 9  C CB ALA A 12 B 52.50  40.00 0.00 0.50 20.0 12 A 1 I
+ATOM 10 C CB ALA A 20 A 100.00 0.00  0.00 0.50 20.0 20 A 1 K
+ATOM 11 C CB ALA A 20 B 100.00 10.00 0.00 0.50 20.0 20 A 1 L
+ATOM 12 C CB ALA A 25 A 102.50 0.00  0.00 0.50 20.0 25 A 1 L
+ATOM 13 O O  ALA A 30 . 150.00 0.00  0.00 1.00 20.0 30 A 1 Base
+ATOM 14 C CB ALA A 31 A 152.00 0.00  0.00 0.50 20.0 31 A 1 M
+ATOM 15 C CB ALA A 40 . 200.00 0.00  0.00 1.00 20.0 40 A 1 Base
+ATOM 16 C CB ALA A 41 . 202.00 0.00  0.00 1.00 20.0 41 A 1 Base
+ATOM 17 C C  ALA A 50 . 250.00 0.00  0.00 1.00 20.0 50 A 1 Base
+ATOM 18 N N  ALA A 51 . 251.33 0.00  0.00 1.00 20.0 51 A 1 Base
+ATOM 19 S SG CYS A 60 . 300.00 0.00  0.00 1.00 20.0 60 A 1 Base
+ATOM 20 S SG CYS A 61 . 302.05 0.00  0.00 1.00 20.0 61 A 1 Base
+#
