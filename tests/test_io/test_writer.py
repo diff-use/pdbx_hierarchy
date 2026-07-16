@@ -13,8 +13,8 @@ from pdbx_hierarchy.io.writer import (
     write_hierarchy,
     write_mmcif,
 )
-from pdbx_hierarchy.models.coexistence import CoexistenceTable
-from pdbx_hierarchy.models.hierarchy import HierarchyTree
+from pdbx_hierarchy.models.coexistence import CoexistenceRule, CoexistenceTable, StateCoexistence
+from pdbx_hierarchy.models.hierarchy import HierarchyState, HierarchyTree
 
 
 def _fresh_doc_with_block(name: str = "TEST") -> tuple[gemmi.cif.Document, gemmi.cif.Block]:
@@ -80,6 +80,51 @@ class TestWriteHierarchy:
         assert len(result) == len(simple_hierarchy)
         assert {s.id for s in result.states} == {s.id for s in simple_hierarchy.states}
 
+    def test_details_with_spaces_round_trip_through_file(self, tmp_path: Path) -> None:
+        # Regression: values with whitespace must be quoted, or the loop corrupts.
+        tree = HierarchyTree(
+            states=[
+                HierarchyState(id="Base", name="base_state", parent=None),
+                HierarchyState(id="A", name="state_a", parent="Base", details="an alternate loop conformation"),
+            ]
+        )
+        doc, block = _fresh_doc_with_block()
+        write_hierarchy(block, tree)
+        path = tmp_path / "spaced.cif"
+        write_mmcif(doc, path)
+
+        result = read_hierarchy(path)  # reparses the serialized text
+        assert result.get_state("A").details == "an alternate loop conformation"
+
+    @pytest.mark.parametrize(
+        "details",
+        [
+            "simple",
+            "two words",
+            "leading _underscore",
+            "_starts_with_underscore",
+            "loop_",
+            "data_thing",
+            "has 'single' quotes",
+            'has "double" quotes',
+            "has 'both' \"kinds\"",
+            "trailing space ",
+            "tab\tseparated",
+        ],
+    )
+    def test_arbitrary_details_round_trip_through_file(self, tmp_path: Path, details: str) -> None:
+        tree = HierarchyTree(
+            states=[
+                HierarchyState(id="Base", name="base_state", parent=None),
+                HierarchyState(id="A", name="state_a", parent="Base", details=details),
+            ]
+        )
+        doc, block = _fresh_doc_with_block()
+        write_hierarchy(block, tree)
+        path = tmp_path / "detail.cif"
+        write_mmcif(doc, path)
+        assert read_hierarchy(path).get_state("A").details == details
+
 
 class TestWriteCoexistence:
     def test_creates_loop(self, simple_coexistence: CoexistenceTable) -> None:
@@ -106,6 +151,28 @@ class TestWriteCoexistence:
         tbl = block.find("_pdbx_state_coexistence.", ["heterogeneity_ids"])
         # simple_coexistence has heterogeneity_ids=["A"] -> "A"
         assert tbl[0][0] == "A"
+
+    def test_description_with_spaces_round_trip_through_file(self, tmp_path: Path) -> None:
+        # Regression: a spaced description must be quoted, or the loop corrupts.
+        table = CoexistenceTable(
+            rules=[
+                StateCoexistence(
+                    id=1,
+                    rule=CoexistenceRule.NOT,
+                    heterogeneity_id="A",
+                    heterogeneity_ids=["B"],
+                    description="mutually exclusive per clash analysis",
+                )
+            ]
+        )
+        doc, block = _fresh_doc_with_block()
+        write_coexistence(block, table)
+        path = tmp_path / "spaced.cif"
+        write_mmcif(doc, path)
+
+        result = read_coexistence(path)  # reparses the serialized text
+        assert result is not None
+        assert result.rules[0].description == "mutually exclusive per clash analysis"
 
     def test_overwrite_raises(self, simple_coexistence: CoexistenceTable) -> None:
         _, block = _fresh_doc_with_block()

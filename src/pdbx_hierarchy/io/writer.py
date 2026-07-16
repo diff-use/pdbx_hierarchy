@@ -10,6 +10,47 @@ from pdbx_hierarchy.exceptions import PdbxValidationError
 from pdbx_hierarchy.models.coexistence import CoexistenceTable
 from pdbx_hierarchy.models.hierarchy import HierarchyTree
 
+_RESERVED_WORDS = frozenset({"loop_", "stop_", "global_"})
+
+
+def _needs_quoting(value: str) -> bool:
+    """Return True if a bare mmCIF token would be misread and must be quoted."""
+    if value == "":
+        return True
+    if any(char.isspace() for char in value):
+        return True
+    if value[0] in "_#$[];'\"":
+        return True
+    lowered = value.lower()
+    return lowered in _RESERVED_WORDS or lowered.startswith(("data_", "save_"))
+
+
+def _mmcif_token(value: str) -> str:
+    """Quote a value for mmCIF output, preserving the ``.``/``?`` null markers.
+
+    gemmi's ``Loop.add_row`` writes values verbatim, so a value containing
+    whitespace (or other characters that would confuse the parser) must be quoted
+    here first, or it would split into multiple tokens and corrupt the loop. Values
+    that are already safe bare tokens are returned unchanged, so ordinary ids and
+    names stay unquoted. The bare tokens ``.`` (inapplicable) and ``?`` (unknown)
+    are left as-is so they keep their null meaning rather than becoming the literal
+    strings ``"."``/``"?"``.
+
+    Args:
+        value: The raw cell value.
+
+    Returns:
+        A token safe to place in an mmCIF loop row.
+    """
+    if value in (".", "?") or not _needs_quoting(value):
+        return value
+    if "'" not in value and "\n" not in value:
+        return f"'{value}'"
+    if '"' not in value and "\n" not in value:
+        return f'"{value}"'
+    # Hard case (e.g. contains both quote styles or newlines): defer to gemmi.
+    return gemmi.cif.quote(value)
+
 
 def write_hierarchy(block: gemmi.cif.Block, hierarchy: HierarchyTree, *, overwrite: bool = False) -> None:
     """Write a HierarchyTree into the _pdbx_heterogeneity_hierarchy loop in a block.
@@ -26,7 +67,7 @@ def write_hierarchy(block: gemmi.cif.Block, hierarchy: HierarchyTree, *, overwri
         raise PdbxValidationError("_pdbx_heterogeneity_hierarchy already exists; pass overwrite=True to replace")
     loop = block.init_loop("_pdbx_heterogeneity_hierarchy.", ["id", "name", "parent", "details"])
     for row in hierarchy.to_mmcif_rows():
-        loop.add_row([row["id"], row["name"], row["parent"], row["details"]])
+        loop.add_row([_mmcif_token(row[key]) for key in ("id", "name", "parent", "details")])
 
 
 def write_coexistence(block: gemmi.cif.Block, coexistence: CoexistenceTable, *, overwrite: bool = False) -> None:
@@ -47,7 +88,9 @@ def write_coexistence(block: gemmi.cif.Block, coexistence: CoexistenceTable, *, 
         ["id", "rule", "heterogeneity_id", "heterogeneity_ids", "description"],
     )
     for row in coexistence.to_mmcif_rows():
-        loop.add_row([row["id"], row["rule"], row["heterogeneity_id"], row["heterogeneity_ids"], row["description"]])
+        loop.add_row(
+            [_mmcif_token(row[key]) for key in ("id", "rule", "heterogeneity_id", "heterogeneity_ids", "description")]
+        )
 
 
 def write_atom_site_heterogeneity_ids(block: gemmi.cif.Block, ids: list[str], *, overwrite: bool = False) -> None:

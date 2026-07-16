@@ -11,6 +11,25 @@ from pdbx_hierarchy.models.coexistence import CoexistenceTable
 from pdbx_hierarchy.models.hierarchy import HierarchyTree
 
 
+def _unquote(raw: str) -> str:
+    """Return the string value of a raw mmCIF token, keeping ``.``/``?`` nulls.
+
+    gemmi returns loop cells verbatim, so a quoted value arrives with its quotes
+    (e.g. ``"'an alternate loop'"``). This strips the quoting via gemmi while
+    leaving the bare null markers ``.`` and ``?`` intact so downstream null
+    handling still recognizes them.
+
+    Args:
+        raw: The raw token as returned by gemmi.
+
+    Returns:
+        The unquoted string value, or the bare null marker unchanged.
+    """
+    if raw in (".", "?"):
+        return raw
+    return gemmi.cif.as_string(raw)
+
+
 def _resolve_block(source: Path | gemmi.cif.Block) -> gemmi.cif.Block:
     """Return a gemmi Block from either a file path or an existing Block.
 
@@ -87,7 +106,10 @@ def read_hierarchy(source: Path | gemmi.cif.Block) -> HierarchyTree:
     tbl = block.find("_pdbx_heterogeneity_hierarchy.", ["id", "name", "parent", "details"])
     if not tbl:
         raise HierarchyNotFoundError("No _pdbx_heterogeneity_hierarchy table found")
-    rows = [{"id": row[0], "name": row[1], "parent": row[2], "details": row[3]} for row in tbl]
+    rows = [
+        {"id": _unquote(row[0]), "name": _unquote(row[1]), "parent": _unquote(row[2]), "details": _unquote(row[3])}
+        for row in tbl
+    ]
     return HierarchyTree.from_mmcif_rows(rows)
 
 
@@ -113,11 +135,11 @@ def read_coexistence(source: Path | gemmi.cif.Block) -> CoexistenceTable | None:
         return None
     rows = [
         {
-            "id": row[0],
-            "rule": row[1],
-            "heterogeneity_id": row[2],
-            "heterogeneity_ids": row[3],
-            "description": row[4],
+            "id": _unquote(row[0]),
+            "rule": _unquote(row[1]),
+            "heterogeneity_id": _unquote(row[2]),
+            "heterogeneity_ids": _unquote(row[3]),
+            "description": _unquote(row[4]),
         }
         for row in tbl
     ]

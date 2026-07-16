@@ -178,7 +178,7 @@ def apply(
                     rule=CoexistenceRule.NOT,
                     heterogeneity_id=source,
                     heterogeneity_ids=[related],
-                    description="clash-mitigation",
+                    description="added by clash apply",
                 )
             )
             applied_nots += 1
