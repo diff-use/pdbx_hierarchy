@@ -171,10 +171,25 @@ Place test files in `tests/` directory, mirroring src structure.
 
 ## Git Commits
 
-Use two `-m` flags for commit messages:
-- First `-m`: One-line summary (lowercase, imperative)
-- Second `-m`: Additional details if needed
+Commit messages follow
+[Conventional Commits v1.0.0](https://www.conventionalcommits.org/en/v1.0.0/).
+Compose with separate `-m` flags, one per paragraph:
 
 ```bash
-git commit -m "phase 2: add data models" -m "Add HierarchyState, HierarchyTree, and coexistence models with validation."
+git commit -m "feat(io)!: add coexistence table writer" \
+           -m "Writes _pdbx_state_coexistence rows from a CoexistenceTable, one
+row per rule, with heterogeneity_ids joined back into a comma-separated
+string." \
+           -m "BREAKING CHANGE: read_coexistence now returns CoexistenceTable"
 ```
+
+- **`-m` #1 — subject.** `<type>[(scope)][!]: <description>`, imperative mood,
+  lowercase after the colon, no trailing period, **72 characters maximum**.
+- **`-m` #2 — body.** Prose wrapped at 72 columns. Optional for trivial commits.
+- **`-m` #3 — footers.** `BREAKING CHANGE: …`, `Refs: …`. Only when needed.
+
+Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`,
+`ci`, `chore`, `revert`. Scope is optional, lowercase, free-form.
+
+A breaking change requires **both** the `!` before the colon and a
+`BREAKING CHANGE:` footer, and is never trivial enough to skip the body.
