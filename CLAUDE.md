@@ -32,6 +32,7 @@ src/pdbx_hierarchy/
 ├── assignment.py         # Infer a hierarchy from label_alt_id
 ├── merge.py              # Merge a ground and a changed model into one file
 ├── occupancy.py          # Integer-hundredths occupancy fold for the merge
+├── altloc.py             # Partition the label_alt_id alphabet between the merge's inputs
 ├── models/
 │   ├── hierarchy.py      # HierarchyState, HierarchyTree
 │   ├── coexistence.py    # StateCoexistence, CoexistenceTable

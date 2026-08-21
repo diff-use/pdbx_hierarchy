@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING, NamedTuple, cast
 
 import gemmi
 
-from pdbx_hierarchy import occupancy
+from pdbx_hierarchy import altloc, occupancy
 from pdbx_hierarchy.assignment import assign_from_alt_ids
 from pdbx_hierarchy.exceptions import HierarchyNotFoundError, PdbxParseError, PdbxValidationError
 from pdbx_hierarchy.io.reader import (
@@ -79,7 +79,17 @@ OUTPUT_CATEGORIES = (
 #: same order as the rows of the corresponding _atom_site loop.
 _ORDER_CHECK_COLUMNS = ("label_comp_id", "label_atom_id", "label_alt_id")
 
-_BLANK_ALT_ID = "."
+
+class AltlocMap(NamedTuple):
+    """One input's altloc relabelling, for the caller to print in full.
+
+    Attributes:
+        source_name: The input file's name.
+        mapping: Old -> new ``label_alt_id``, with ``.`` for the blank label.
+    """
+
+    source_name: str
+    mapping: dict[str, str]
 
 
 class _ResidueKey(NamedTuple):
@@ -126,12 +136,14 @@ class MergeReport:
         tree: The merged hierarchy tree.
         changed_id_map: Old -> new state id for every non-root state of the
             changed input's tree.
+        altloc_maps: Each input's altloc relabelling, ground first.
         notes: Human-readable observations worth printing.
     """
 
     output_path: Path
     tree: HierarchyTree
     changed_id_map: dict[str, str]
+    altloc_maps: list[AltlocMap] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
 
@@ -160,9 +172,10 @@ def merge_states(
         FileNotFoundError: If either input does not exist.
         PdbxParseError: If an input is malformed or contains no atoms.
         PdbxValidationError: If either input has an atom position whose
-            occupancies already sum above ``1.00``, if the two inputs define the
-            same chemical component with differing formulae, or if the assembled
-            file's atom order cannot be reconciled with the hierarchy
+            occupancies already sum above ``1.00``, if the two inputs need more
+            altloc labels between them than the alphabet has, if the two inputs
+            define the same chemical component with differing formulae, or if the
+            assembled file's atom order cannot be reconciled with the hierarchy
             assignments.
     """
     ground = load_source(ground_path)
@@ -171,6 +184,7 @@ def merge_states(
     _rename_root(ground, GROUND_STATE_ID, GROUND_STATE_NAME)
     _rename_root(changed, CHANGED_STATE_ID, CHANGED_STATE_NAME)
     changed_id_map = _deconflict_state_ids(ground.tree, changed)
+    altloc_maps = _partition_altlocs(ground, changed)
 
     occupancy_notes = _scale_occupancies(ground, changed, occ)
     tree = _build_merged_tree(ground, changed, occ)
@@ -186,7 +200,13 @@ def merge_states(
         if source.reused_hierarchy
     ]
     notes.extend(occupancy_notes)
-    return MergeReport(output_path=output_path, tree=tree, changed_id_map=changed_id_map, notes=notes)
+    return MergeReport(
+        output_path=output_path,
+        tree=tree,
+        changed_id_map=changed_id_map,
+        altloc_maps=altloc_maps,
+        notes=notes,
+    )
 
 
 # === Reading an input ===
@@ -307,8 +327,7 @@ def _walk_value(column: str, residue: gemmi.Residue, atom: gemmi.Atom) -> str:
         return residue.name
     if column == "label_atom_id":
         return atom.name
-    # gemmi stores "no altloc" as a NUL char, which is truthy in Python.
-    return atom.altloc if atom.altloc not in ("", "\x00") else _BLANK_ALT_ID
+    return altloc.read_altloc(atom)
 
 
 # === Tree surgery ===
@@ -471,6 +490,38 @@ def _reparented(source: SourceModel, root_details: str) -> list[HierarchyState]:
 def _provenance_token(path: Path) -> str:
     """Return a whitespace-free form of a filename, safe as an unquoted mmCIF value."""
     return re.sub(r"\s+", "_", path.name)
+
+
+# === Altloc labels ===
+
+
+def _partition_altlocs(ground: SourceModel, changed: SourceModel) -> list[AltlocMap]:
+    """Give every atom in both inputs a real altloc label, ground's first.
+
+    Sits here in the pipeline for two reasons: after state assignment, which is
+    what the ``altloc`` module's ordering note is about, and before assembly,
+    which pools the two inputs' atoms into shared residues — coherent only once
+    no label means two things. See that module for the alphabet and its limits.
+
+    Args:
+        ground: The ground model, relabelled from the start of the alphabet.
+        changed: The changed model, relabelled above ground's highest label.
+
+    Returns:
+        Each input's old -> new mapping, ground first, for the caller to print.
+
+    Raises:
+        PdbxValidationError: If the two inputs need more than the 62 available
+            labels between them.
+    """
+    sources = (ground, changed)
+    # Materialised because each input's atoms are read twice: once for their
+    # labels, once to write the new ones back.
+    atoms = [[atom for _, _, atom in _iter_atoms(source.structure)] for source in sources]
+    mappings = altloc.partition([altloc.original_labels(group) for group in atoms])
+    for group, mapping in zip(atoms, mappings, strict=True):
+        altloc.relabel(group, mapping)
+    return [AltlocMap(source.path.name, mapping) for source, mapping in zip(sources, mappings, strict=True)]
 
 
 # === Occupancy ===

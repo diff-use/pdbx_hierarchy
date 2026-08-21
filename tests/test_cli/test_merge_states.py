@@ -17,6 +17,7 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
+from pdbx_hierarchy.altloc import ALPHABET
 from pdbx_hierarchy.io.reader import read_atom_site_heterogeneity_ids, read_hierarchy
 
 MERGED_NAME = "merge_changed_merge_ground_hierarchy.cif"
@@ -74,6 +75,45 @@ def _categories(path: Path) -> set[str]:
 def _column(path: Path, tag: str) -> list[str]:
     block = gemmi.cif.read(str(path)).sole_block()
     return list(block.find_loop(tag))
+
+
+def _labels_by_branch(path: Path) -> tuple[set[str], set[str]]:
+    """Return the altloc labels used by the ground branch and by the changed branch."""
+    tree = read_hierarchy(path)
+    ground_ids = {"Ground"} | {state.id for state in tree.get_descendants("Ground")}
+    ground: set[str] = set()
+    changed: set[str] = set()
+    labels = _column(path, "_atom_site.label_alt_id")
+    for label, state in zip(labels, read_atom_site_heterogeneity_ids(path), strict=True):
+        (ground if state in ground_ids else changed).add(label)
+    return ground, changed
+
+
+def _add_altloc_atoms(path: Path, labels: str) -> None:
+    """Rewrite an input so its first residue carries one extra atom per label.
+
+    Each atom gets its own name, so the additions are separate positions and the
+    occupancy bound is untouched — the point is only to spend altloc labels.
+
+    Args:
+        path: The input file, overwritten in place.
+        labels: One altloc label per atom to add.
+    """
+    structure = gemmi.read_structure(str(path))
+    additions = []
+    for index, label in enumerate(labels):
+        atom = gemmi.Atom()
+        atom.name = f"Z{index}"
+        atom.element = gemmi.Element("C")
+        atom.altloc = label
+        atom.pos = gemmi.Position(20.0 + index, 20.0, 20.0)
+        atom.occ = 1.0
+        atom.b_iso = 20.0
+        additions.append(atom)
+    residue = structure[0]["A"][0]
+    for atom in additions:
+        residue.add_atom(atom)
+    structure.make_mmcif_document().write_file(str(path))
 
 
 def _position_sums(path: Path) -> dict[tuple[str, str, str], int]:
@@ -337,19 +377,118 @@ class TestAtoms:
         assert sum(1 for a in assigned if a in ground_ids) == 19
         assert sum(1 for a in assigned if a in changed_ids) == 19
 
-    def test_conformer_atoms_land_on_conformer_states(
+    def test_each_altloc_label_belongs_to_exactly_one_state(
         self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
     ) -> None:
         out = tmp_path / "merged.cif"
         assert _merge(runner, app, pair, out)[0] == 0
         alts = _column(out, "_atom_site.label_alt_id")
         assigned = read_atom_site_heterogeneity_ids(out)
-        # Blank-altloc atoms sit on their branch root; altloc atoms sit on a child.
+        # What makes the merged file coherent to a hierarchy-unaware reader: a
+        # label names one conformation, so every atom carrying it is in one state.
+        states_per_label: dict[str, set[str]] = {}
         for alt, state in zip(alts, assigned, strict=True):
-            if alt == ".":
-                assert state in {"Ground", "Changed"}
-            else:
-                assert state in {"A", "B", "C", "D"}
+            states_per_label.setdefault(alt, set()).add(state)
+        assert all(len(states) == 1 for states in states_per_label.values()), states_per_label
+        # Formerly-blank atoms sit on their branch root; conformers on a child.
+        assert {label for label, states in states_per_label.items() if states <= {"Ground", "Changed"}} == {"A", "D"}
+        assert {label for label, states in states_per_label.items() if states <= {"A", "B", "C", "D"}} == {
+            "B",
+            "C",
+            "E",
+            "F",
+        }
+
+
+class TestAltloc:
+    """The altloc partition: every atom labelled, ground first, no label shared.
+
+    On the fixture pair each input carries three distinct original labels — blank,
+    ``A`` and ``B`` — so ground's map to ``A``, ``B``, ``C`` and changed's continue
+    at ``D``, ``E``, ``F``. Blank sorts first within an input, which is why the 15
+    formerly-blank ground atoms all come out as ``A``.
+    """
+
+    def test_every_atom_carries_a_real_label(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        out = tmp_path / "merged.cif"
+        assert _merge(runner, app, pair, out)[0] == 0
+        labels = _column(out, "_atom_site.label_alt_id")
+        assert len(labels) == 38
+        assert all(len(label) == 1 and label not in {".", "?"} for label in labels), sorted(set(labels))
+
+    def test_blank_altloc_atoms_receive_real_labels(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        out = tmp_path / "merged.cif"
+        assert _merge(runner, app, pair, out)[0] == 0
+        labels = _column(out, "_atom_site.label_alt_id")
+        # 15 of each input's 19 atoms have no altloc in the input; they take their
+        # input's first label rather than staying blank.
+        assert labels.count("A") == 15
+        assert labels.count("D") == 15
+
+    def test_ground_labels_run_contiguously_from_the_start_of_the_alphabet(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        out = tmp_path / "merged.cif"
+        assert _merge(runner, app, pair, out)[0] == 0
+        ground, _ = _labels_by_branch(out)
+        assert ground == {"A", "B", "C"}
+
+    def test_changed_labels_continue_above_the_highest_ground_label(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        out = tmp_path / "merged.cif"
+        assert _merge(runner, app, pair, out)[0] == 0
+        ground, changed = _labels_by_branch(out)
+        assert max(ALPHABET.index(label) for label in ground) < min(ALPHABET.index(label) for label in changed)
+        assert changed == {"D", "E", "F"}
+
+    def test_no_label_is_shared_between_the_two_inputs(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        out = tmp_path / "merged.cif"
+        assert _merge(runner, app, pair, out)[0] == 0
+        ground, changed = _labels_by_branch(out)
+        assert ground.isdisjoint(changed)
+
+    def test_the_full_mapping_is_printed_for_each_input(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        out = tmp_path / "merged.cif"
+        code, output = _merge(runner, app, pair, out)
+        assert code == 0, output
+        assert "merge_ground.cif: .->A, A->B, B->C" in output
+        assert "merge_changed.cif: .->D, A->E, B->F" in output
+
+    def test_relabelling_does_not_feed_back_into_state_assignment(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        out = tmp_path / "merged.cif"
+        assert _merge(runner, app, pair, out)[0] == 0
+        tree = read_hierarchy(out)
+        # Inference reads the original labels, so each branch keeps the two
+        # conformer states its SER 2 called for. Inferring after the relabel would
+        # read all 15 formerly-blank atoms as conformers instead.
+        assert len(tree.get_children("Ground")) == 2
+        assert len(tree.get_children("Changed")) == 2
+        assigned = read_atom_site_heterogeneity_ids(out)
+        assert assigned.count("Ground") == 15
+        assert assigned.count("Changed") == 15
+
+    def test_exhausting_the_alphabet_is_a_validation_error(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        ground, changed = pair
+        # 62 labels in the ground input alone, plus its blanks and the changed
+        # input's three, needs 66 of the 62 the alphabet has.
+        _add_altloc_atoms(ground, ALPHABET)
+        code, output = _merge(runner, app, pair, tmp_path / "merged.cif")
+        assert code == 1
+        assert "66" in output
+        assert "62" in output
 
 
 class TestOccupancy:

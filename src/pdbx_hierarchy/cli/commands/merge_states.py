@@ -8,12 +8,15 @@ within-one-file commands do.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 import typer
 
 from pdbx_hierarchy import merge
 from pdbx_hierarchy.cli.commands._utils import error_handler, render_tree, warn
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 
 def _validate_occ(value: float) -> float:
@@ -35,6 +38,22 @@ def _validate_occ(value: float) -> float:
     if round(value, 2) != value:
         raise typer.BadParameter(f"must carry at most two decimal places, got {value}")
     return value
+
+
+def _render_map(mapping: Mapping[str, str]) -> str:
+    """Render an old -> new remap as one traceable line.
+
+    Sorted by the old value so a reader looking up what became of a particular
+    state id or altloc label can scan for it, rather than having to know which
+    order the merge happened to assign in.
+
+    Args:
+        mapping: Old -> new, of state ids or of altloc labels.
+
+    Returns:
+        The remap as ``old->new`` pairs, comma-separated.
+    """
+    return ", ".join(f"{old}->{new}" for old, new in sorted(mapping.items()))
 
 
 def _resolve_merged_path(ground: Path, changed: Path, output: Path | None, *, yes: bool) -> Path:
@@ -95,7 +114,10 @@ def merge_states(
             warn(note)
         typer.echo(f"Merged {ground.name} (ground) and {changed.name} (changed) at occ={occ:.2f}")
         typer.echo(render_tree(report.tree))
+        # Printed in full rather than summarised: these mappings are the only
+        # trace from an atom in the merged file back to its row in an input.
         if report.changed_id_map:
-            remap = ", ".join(f"{old}->{new}" for old, new in sorted(report.changed_id_map.items()))
-            typer.echo(f"Changed state ids: {remap}")
+            typer.echo(f"Changed state ids: {_render_map(report.changed_id_map)}")
+        for altloc_map in report.altloc_maps:
+            typer.echo(f"Altloc labels in {altloc_map.source_name}: {_render_map(altloc_map.mapping)}")
         typer.echo(f"Wrote {out}")
