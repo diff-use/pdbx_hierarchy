@@ -2,7 +2,7 @@
 
 import typer
 
-from pdbx_hierarchy.cli.commands import coexist, create, hierarchy, show, validate
+from pdbx_hierarchy.cli.commands import coexist, create, hierarchy, merge_states, show, validate
 
 app = typer.Typer(
     name="pdbx-hierarchy",
@@ -20,5 +20,6 @@ app.command("show")(show.show)
 app.command("validate")(validate.validate)
 app.command("infer")(create.infer)
 app.command("import")(create.import_spec)
+app.command("merge-states")(merge_states.merge_states)
 app.add_typer(hierarchy.app, name="hierarchy")
 app.add_typer(coexist.app, name="coexist")

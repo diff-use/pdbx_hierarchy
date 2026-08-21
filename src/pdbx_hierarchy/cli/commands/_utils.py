@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from collections import deque
 from contextlib import contextmanager
 from pathlib import Path
@@ -15,14 +14,10 @@ from pydantic import ValidationError
 from pdbx_hierarchy.exceptions import PdbxHierarchyError, PdbxParseError, PdbxValidationError
 from pdbx_hierarchy.models.coexistence import CoexistenceTable, StateCoexistence
 from pdbx_hierarchy.models.hierarchy import HierarchyState, HierarchyTree
-from pdbx_hierarchy.models.id_generator import HierarchyIdGenerator
+from pdbx_hierarchy.models.id_generator import HierarchyIdGenerator, is_canonical_id
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
-
-# A canonical state id is an uppercase-letter run (A, B, ..., Z, AA, ...), as produced
-# by HierarchyIdGenerator. Anything else (e.g. "Base" or a hand-given label) is "named".
-_CANONICAL_ID_RE = re.compile(r"^[A-Z]+$")
 
 
 def fail(message: str) -> NoReturn:
@@ -237,7 +232,7 @@ def reassign_ids(tree: HierarchyTree, *, preserve_named: bool = False) -> dict[s
     reserved: set[str] = {root.id}
     if preserve_named:
         for state_id in bfs_order[1:]:
-            if not _CANONICAL_ID_RE.match(state_id):
+            if not is_canonical_id(state_id):
                 mapping[state_id] = state_id
                 reserved.add(state_id)
 

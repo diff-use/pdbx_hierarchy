@@ -8,10 +8,34 @@ This is a bijective base-26 numeral system where A=1, B=2, ..., Z=26.
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Self
 
 if TYPE_CHECKING:
     from pdbx_hierarchy.models.hierarchy import HierarchyTree
+
+# A canonical id is an uppercase-letter run (A, B, ..., Z, AA, ...), as produced by
+# HierarchyIdGenerator. Anything else ("Base", or a hand-given label) is "named".
+_CANONICAL_ID_RE = re.compile(r"^[A-Z]+$")
+
+
+def is_canonical_id(value: str) -> bool:
+    """Return True if a state id belongs to the generated sequence.
+
+    Args:
+        value: The state id to test.
+
+    Returns:
+        True for an uppercase-letter run such as ``A`` or ``AB``; False for a
+        named id such as ``Base`` or ``Ground``.
+
+    Examples:
+        >>> is_canonical_id("AB")
+        True
+        >>> is_canonical_id("Base")
+        False
+    """
+    return bool(_CANONICAL_ID_RE.match(value))
 
 
 def _index_to_id(index: int) -> str:

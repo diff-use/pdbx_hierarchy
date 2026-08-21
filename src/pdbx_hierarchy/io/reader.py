@@ -10,6 +10,15 @@ from pdbx_hierarchy.exceptions import HierarchyNotFoundError, PdbxParseError
 from pdbx_hierarchy.models.coexistence import CoexistenceTable
 from pdbx_hierarchy.models.hierarchy import HierarchyTree
 
+# Columns to count _atom_site rows from, in preference order: every real file has
+# at least one of them, whether or not it carries the optional id column.
+_ATOM_SITE_ROW_COUNT_TAGS = (
+    "_atom_site.id",
+    "_atom_site.label_asym_id",
+    "_atom_site.type_symbol",
+    "_atom_site.label_atom_id",
+)
+
 
 def _resolve_block(source: Path | gemmi.cif.Block) -> gemmi.cif.Block:
     """Return a gemmi Block from either a file path or an existing Block.
@@ -53,6 +62,26 @@ def read_mmcif(path: Path) -> gemmi.cif.Block:
         PdbxParseError: If the file is malformed or has more than one data block.
     """
     return _resolve_block(path)
+
+
+def count_atom_site_rows(source: Path | gemmi.cif.Block) -> int:
+    """Return the number of rows in the _atom_site loop, or 0 if there is none.
+
+    Counted from whichever of a few always-present columns the file actually has,
+    so a file omitting the optional ``_atom_site.id`` still reports its atoms.
+
+    Args:
+        source: Path to a mmCIF file, or an already-loaded Block.
+
+    Returns:
+        The row count, or 0 when the file has no atoms at all.
+    """
+    block = _resolve_block(source)
+    for tag in _ATOM_SITE_ROW_COUNT_TAGS:
+        col = block.find_loop(tag)
+        if col:
+            return len(col)
+    return 0
 
 
 def has_hierarchy(source: Path | gemmi.cif.Block) -> bool:

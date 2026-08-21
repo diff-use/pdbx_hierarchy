@@ -1,0 +1,529 @@
+"""Tests for the ``merge-states`` command.
+
+The fixture pair is ``merge_ground.cif`` / ``merge_changed.cif``: 19 atoms each,
+polymer residues 1-3 in chain A with a two-conformer SER at 2, and a non-polymer
+at auth_seq_id 101 that collides between the two inputs (EDO in ground, W2S in
+changed).
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from pathlib import Path
+
+import gemmi
+import pytest
+import typer
+from typer.testing import CliRunner
+
+from pdbx_hierarchy.io.reader import read_atom_site_heterogeneity_ids, read_hierarchy
+
+MERGED_NAME = "merge_changed_merge_ground_hierarchy.cif"
+
+ALLOWED_CATEGORIES = {
+    "_entry.",
+    "_cell.",
+    "_symmetry.",
+    "_chem_comp.",
+    "_atom_site.",
+    "_pdbx_heterogeneity_hierarchy.",
+}
+
+
+@pytest.fixture
+def pair(copy_fixture: Callable[[str], Path]) -> tuple[Path, Path]:
+    """Copy the ground/changed fixture pair into tmp_path."""
+    return copy_fixture("merge_ground.cif"), copy_fixture("merge_changed.cif")
+
+
+def _merge(runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], out: Path, *extra: str) -> tuple[int, str]:
+    ground, changed = pair
+    result = runner.invoke(
+        app,
+        [
+            "merge-states",
+            "--ground",
+            str(ground),
+            "--changed",
+            str(changed),
+            "--occ",
+            "0.60",
+            "-o",
+            str(out),
+            "-y",
+            *extra,
+        ],
+    )
+    return result.exit_code, result.output + result.stderr
+
+
+def _categories(path: Path) -> set[str]:
+    block = gemmi.cif.read(str(path)).sole_block()
+    found: set[str] = set()
+    for item in block:
+        if item.pair is not None:
+            found.add(item.pair[0].split(".")[0] + ".")
+        elif item.loop is not None:
+            found.add(item.loop.tags[0].split(".")[0] + ".")
+    return found
+
+
+def _column(path: Path, tag: str) -> list[str]:
+    block = gemmi.cif.read(str(path)).sole_block()
+    return list(block.find_loop(tag))
+
+
+class TestTree:
+    def test_base_has_exactly_ground_and_changed(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        out = tmp_path / "merged.cif"
+        code, output = _merge(runner, app, pair, out)
+        assert code == 0, output
+        tree = read_hierarchy(out)
+        root = tree.get_root()
+        assert (root.id, root.name) == ("Base", "base_state")
+        children = {(s.id, s.name) for s in tree.get_children("Base")}
+        assert children == {("Ground", "ground_state"), ("Changed", "changed_state")}
+
+    def test_base_owns_no_atoms(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        out = tmp_path / "merged.cif"
+        assert _merge(runner, app, pair, out)[0] == 0
+        assert "Base" not in read_atom_site_heterogeneity_ids(out)
+
+    def test_changed_ids_reassigned_above_ground(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        out = tmp_path / "merged.cif"
+        assert _merge(runner, app, pair, out)[0] == 0
+        tree = read_hierarchy(out)
+        # Each input infers two conformer states from its SER; ground keeps A/B and
+        # changed's are pushed above them.
+        assert {s.id for s in tree.get_children("Ground")} == {"A", "B"}
+        assert {s.id for s in tree.get_children("Changed")} == {"C", "D"}
+
+    def test_reassigned_states_are_renamed(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        out = tmp_path / "merged.cif"
+        assert _merge(runner, app, pair, out)[0] == 0
+        tree = read_hierarchy(out)
+        assert {s.name for s in tree.get_children("Changed")} == {"state_C", "state_D"}
+
+    def test_every_atom_references_a_defined_state(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        out = tmp_path / "merged.cif"
+        assert _merge(runner, app, pair, out)[0] == 0
+        tree = read_hierarchy(out)
+        assert all(tree.contains(state_id) for state_id in read_atom_site_heterogeneity_ids(out))
+
+    def test_output_passes_the_validate_command(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        out = tmp_path / "merged.cif"
+        assert _merge(runner, app, pair, out)[0] == 0
+        result = runner.invoke(app, ["validate", str(out)])
+        assert result.exit_code == 0, result.output + result.stderr
+
+    def test_provenance_in_details(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        out = tmp_path / "merged.cif"
+        assert _merge(runner, app, pair, out)[0] == 0
+        tree = read_hierarchy(out)
+        base_details = tree.get_state("Base").details or ""
+        assert "merge_ground.cif" in base_details
+        assert "merge_changed.cif" in base_details
+        assert "0.60" in base_details
+        assert "merge_ground.cif" in (tree.get_state("Ground").details or "")
+        assert "0.40" in (tree.get_state("Ground").details or "")
+        assert "merge_changed.cif" in (tree.get_state("Changed").details or "")
+        assert "0.60" in (tree.get_state("Changed").details or "")
+
+    def test_existing_hierarchy_is_reused(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        ground, changed = pair
+        # Give the ground input a hierarchy carrying a state inference would never
+        # produce, then check that state survives into the merged tree.
+        inferred = tmp_path / "ground_inferred.cif"
+        assert runner.invoke(app, ["infer", str(ground), "-o", str(inferred), "-y"]).exit_code == 0
+        hand_tuned = tmp_path / "ground_hand.cif"
+        assert (
+            runner.invoke(
+                app,
+                [
+                    "hierarchy",
+                    "add",
+                    str(inferred),
+                    "--id",
+                    "X",
+                    "--name",
+                    "hand_tuned",
+                    "--parent",
+                    "Base",
+                    "-o",
+                    str(hand_tuned),
+                    "-y",
+                ],
+            ).exit_code
+            == 0
+        )
+        out = tmp_path / "merged.cif"
+        result = runner.invoke(
+            app,
+            [
+                "merge-states",
+                "--ground",
+                str(hand_tuned),
+                "--changed",
+                str(changed),
+                "--occ",
+                "0.60",
+                "-o",
+                str(out),
+                "-y",
+            ],
+        )
+        assert result.exit_code == 0, result.output + result.stderr
+        tree = read_hierarchy(out)
+        assert {s.id for s in tree.get_children("Ground")} == {"A", "B", "X"}
+
+    def test_an_id_whose_generated_name_is_taken_is_skipped(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        ground, changed = pair
+        # A reused ground hierarchy can already hold a name of the state_X form.
+        # Reassigning the changed tree onto C would then produce a second
+        # "state_C", which the format forbids as firmly as a duplicate id.
+        inferred = tmp_path / "ground_inferred.cif"
+        assert runner.invoke(app, ["infer", str(ground), "-o", str(inferred), "-y"]).exit_code == 0
+        renamed = tmp_path / "ground_renamed.cif"
+        assert (
+            runner.invoke(
+                app,
+                ["hierarchy", "rename", str(inferred), "--id", "A", "--name", "state_C", "-o", str(renamed), "-y"],
+            ).exit_code
+            == 0
+        )
+        out = tmp_path / "merged.cif"
+        result = runner.invoke(
+            app,
+            [
+                "merge-states",
+                "--ground",
+                str(renamed),
+                "--changed",
+                str(changed),
+                "--occ",
+                "0.60",
+                "-o",
+                str(out),
+                "-y",
+            ],
+        )
+        assert result.exit_code == 0, result.output + result.stderr
+        tree = read_hierarchy(out)
+        assert {s.id for s in tree.get_children("Changed")} == {"D", "E"}
+        assert {s.name for s in tree.get_children("Changed")} == {"state_D", "state_E"}
+
+
+class TestGuards:
+    def test_a_multi_model_input_is_rejected(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        ground, changed = pair
+        two_models = tmp_path / "two_models.cif"
+        structure = gemmi.read_structure(str(ground))
+        second = structure[0].clone()
+        second.num = 2
+        structure.add_model(second)
+        structure.make_mmcif_document().write_file(str(two_models))
+        result = runner.invoke(
+            app,
+            [
+                "merge-states",
+                "--ground",
+                str(two_models),
+                "--changed",
+                str(changed),
+                "--occ",
+                "0.60",
+                "-o",
+                str(tmp_path / "merged.cif"),
+                "-y",
+            ],
+        )
+        assert result.exit_code == 1
+        assert "2 models" in (result.output + result.stderr)
+
+    def test_a_hierarchy_without_atom_assignments_is_rejected(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        ground, changed = pair
+        # A hierarchy table with no _atom_site.pdbx_heterogeneity_id column says
+        # which states exist but not which atoms are in them.
+        unassigned = tmp_path / "unassigned.cif"
+        unassigned.write_text(
+            ground.read_text()
+            + "loop_\n"
+            + "_pdbx_heterogeneity_hierarchy.id\n"
+            + "_pdbx_heterogeneity_hierarchy.name\n"
+            + "_pdbx_heterogeneity_hierarchy.parent\n"
+            + "_pdbx_heterogeneity_hierarchy.details\n"
+            + "Base base_state . ?\n"
+            + "A state_A Base ?\n"
+            + "#\n"
+        )
+        result = runner.invoke(
+            app,
+            [
+                "merge-states",
+                "--ground",
+                str(unassigned),
+                "--changed",
+                str(changed),
+                "--occ",
+                "0.60",
+                "-o",
+                str(tmp_path / "merged.cif"),
+                "-y",
+            ],
+        )
+        assert result.exit_code == 1
+        assert "pdbx_heterogeneity_id" in (result.output + result.stderr)
+
+
+class TestAtoms:
+    def test_atoms_from_both_inputs_are_present(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        out = tmp_path / "merged.cif"
+        assert _merge(runner, app, pair, out)[0] == 0
+        comps = _column(out, "_atom_site.label_comp_id")
+        assert len(comps) == 38  # 19 + 19
+        assert "EDO" in comps  # ground-only non-polymer
+        assert "W2S" in comps  # changed-only non-polymer
+
+    def test_atoms_split_between_the_two_branches(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        out = tmp_path / "merged.cif"
+        assert _merge(runner, app, pair, out)[0] == 0
+        tree = read_hierarchy(out)
+        ground_ids = {"Ground"} | {s.id for s in tree.get_descendants("Ground")}
+        changed_ids = {"Changed"} | {s.id for s in tree.get_descendants("Changed")}
+        assigned = read_atom_site_heterogeneity_ids(out)
+        assert sum(1 for a in assigned if a in ground_ids) == 19
+        assert sum(1 for a in assigned if a in changed_ids) == 19
+
+    def test_conformer_atoms_land_on_conformer_states(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        out = tmp_path / "merged.cif"
+        assert _merge(runner, app, pair, out)[0] == 0
+        alts = _column(out, "_atom_site.label_alt_id")
+        assigned = read_atom_site_heterogeneity_ids(out)
+        # Blank-altloc atoms sit on their branch root; altloc atoms sit on a child.
+        for alt, state in zip(alts, assigned, strict=True):
+            if alt == ".":
+                assert state in {"Ground", "Changed"}
+            else:
+                assert state in {"A", "B", "C", "D"}
+
+
+class TestTableSet:
+    def test_only_the_allowed_categories_are_written(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        out = tmp_path / "merged.cif"
+        assert _merge(runner, app, pair, out)[0] == 0
+        assert _categories(out) == ALLOWED_CATEGORIES
+
+    def test_chem_comp_is_the_union_of_both_inputs(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        out = tmp_path / "merged.cif"
+        assert _merge(runner, app, pair, out)[0] == 0
+        assert set(_column(out, "_chem_comp.id")) == {"ALA", "SER", "GLY", "EDO", "W2S"}
+
+    def test_conflicting_chem_comp_formula_is_an_error(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        ground, changed = pair
+        changed.write_text(changed.read_text().replace("ALA 'C3 H7 N O2'", "ALA 'C9 H9 N O9'"))
+        out = tmp_path / "merged.cif"
+        result = runner.invoke(
+            app,
+            ["merge-states", "--ground", str(ground), "--changed", str(changed), "--occ", "0.60", "-o", str(out), "-y"],
+        )
+        assert result.exit_code == 1
+        assert "ALA" in (result.output + result.stderr)
+
+    def test_label_columns_are_regenerated_not_copied(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        out = tmp_path / "merged.cif"
+        assert _merge(runner, app, pair, out)[0] == 0
+        # Both inputs call their non-polymer label_asym_id B / label_entity_id 2
+        # while meaning different components, so the merged file must carry
+        # neither input's labels: one entity per distinct component, numbered.
+        assert sorted(set(_column(out, "_atom_site.label_entity_id"))) == ["1", "2", "3"]
+        assert len(set(_column(out, "_atom_site.label_asym_id"))) == 3
+
+    def test_entry_id_and_block_name_are_the_output_stem(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        out = tmp_path / "chosen_name.cif"
+        assert _merge(runner, app, pair, out)[0] == 0
+        block = gemmi.cif.read(str(out)).sole_block()
+        assert block.name == "chosen_name"
+        assert gemmi.cif.as_string(block.find_value("_entry.id")) == "chosen_name"
+
+
+class TestOutputPaths:
+    def test_default_name_in_the_working_directory(
+        self,
+        runner: CliRunner,
+        app: typer.Typer,
+        pair: tuple[Path, Path],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        ground, changed = pair
+        work = tmp_path / "work"
+        work.mkdir()
+        monkeypatch.chdir(work)
+        result = runner.invoke(
+            app, ["merge-states", "--ground", str(ground), "--changed", str(changed), "--occ", "0.60", "-y"]
+        )
+        assert result.exit_code == 0, result.output + result.stderr
+        assert (work / MERGED_NAME).exists()
+
+    def test_output_option_overrides_the_path(
+        self,
+        runner: CliRunner,
+        app: typer.Typer,
+        pair: tuple[Path, Path],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        work = tmp_path / "work"
+        work.mkdir()
+        monkeypatch.chdir(work)
+        out = tmp_path / "elsewhere" / "merged.cif"
+        out.parent.mkdir()
+        assert _merge(runner, app, pair, out)[0] == 0
+        assert out.exists()
+        assert not (work / MERGED_NAME).exists()
+
+    def test_existing_output_prompts_without_yes(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        ground, changed = pair
+        out = tmp_path / "merged.cif"
+        out.write_text("placeholder\n")
+        result = runner.invoke(
+            app,
+            ["merge-states", "--ground", str(ground), "--changed", str(changed), "--occ", "0.60", "-o", str(out)],
+            input="n\n",
+        )
+        assert result.exit_code != 0
+        assert out.read_text() == "placeholder\n"
+
+
+class TestUsage:
+    @pytest.mark.parametrize("occ", ["0", "1", "1.5", "-0.2", "0.605"])
+    def test_occ_out_of_range_or_too_precise_is_a_usage_error(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path, occ: str
+    ) -> None:
+        ground, changed = pair
+        result = runner.invoke(
+            app,
+            [
+                "merge-states",
+                "--ground",
+                str(ground),
+                "--changed",
+                str(changed),
+                "--occ",
+                occ,
+                "-o",
+                str(tmp_path / "merged.cif"),
+                "-y",
+            ],
+        )
+        assert result.exit_code == 2, result.output + result.stderr
+
+    @pytest.mark.parametrize("occ", ["0.01", "0.5", "0.99"])
+    def test_occ_in_range_is_accepted(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path, occ: str
+    ) -> None:
+        ground, changed = pair
+        result = runner.invoke(
+            app,
+            [
+                "merge-states",
+                "--ground",
+                str(ground),
+                "--changed",
+                str(changed),
+                "--occ",
+                occ,
+                "-o",
+                str(tmp_path / "merged.cif"),
+                "-y",
+            ],
+        )
+        assert result.exit_code == 0, result.output + result.stderr
+
+    def test_merge_states_is_a_top_level_command(self, runner: CliRunner, app: typer.Typer) -> None:
+        result = runner.invoke(app, ["--help"])
+        assert "merge-states" in result.output
+
+    def test_missing_input_is_an_error(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        _, changed = pair
+        result = runner.invoke(
+            app,
+            [
+                "merge-states",
+                "--ground",
+                str(tmp_path / "nope.cif"),
+                "--changed",
+                str(changed),
+                "--occ",
+                "0.60",
+                "-o",
+                str(tmp_path / "merged.cif"),
+                "-y",
+            ],
+        )
+        assert result.exit_code != 0
+
+    def test_input_without_atoms_is_a_parse_error(
+        self, runner: CliRunner, app: typer.Typer, copy_fixture: Callable[[str], Path], tmp_path: Path
+    ) -> None:
+        atomless = copy_fixture("hierarchy_only.cif")
+        changed = copy_fixture("merge_changed.cif")
+        result = runner.invoke(
+            app,
+            [
+                "merge-states",
+                "--ground",
+                str(atomless),
+                "--changed",
+                str(changed),
+                "--occ",
+                "0.60",
+                "-o",
+                str(tmp_path / "merged.cif"),
+                "-y",
+            ],
+        )
+        assert result.exit_code == 1
+        assert "no atoms" in (result.output + result.stderr)

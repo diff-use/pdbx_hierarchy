@@ -9,7 +9,7 @@ from pathlib import Path
 import gemmi
 
 from pdbx_hierarchy.exceptions import PdbxParseError
-from pdbx_hierarchy.io.reader import _resolve_block
+from pdbx_hierarchy.io.reader import _resolve_block, count_atom_site_rows
 from pdbx_hierarchy.models.hierarchy import HierarchyState, HierarchyTree
 from pdbx_hierarchy.models.id_generator import HierarchyIdGenerator
 
@@ -124,15 +124,6 @@ def _compute_residue_keys(
             keys.append((auth_asym_ids[i], auth_seq_ids[i]))
 
     return keys, tier1_keys
-
-
-def _count_atom_site_rows(block: gemmi.cif.Block) -> int:
-    """Return the number of rows in the _atom_site loop, or 0 if absent."""
-    for tag in ("_atom_site.id", "_atom_site.label_asym_id", "_atom_site.type_symbol", "_atom_site.label_atom_id"):
-        col = block.find_loop(tag)
-        if col:
-            return len(col)
-    return 0
 
 
 def _parse_atoms(
@@ -382,7 +373,7 @@ def assign_from_alt_ids(
     base_tree = HierarchyTree(states=[HierarchyState(id="Base", name="base_state", parent=None, details=None)])
 
     if atoms is None:
-        return base_tree, ["Base"] * _count_atom_site_rows(block)
+        return base_tree, ["Base"] * count_atom_site_rows(block)
 
     if all(atom.alt_id == "." for atom in atoms):
         return base_tree, ["Base"] * len(atoms)
