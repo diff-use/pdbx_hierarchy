@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, NamedTuple, cast
 
 import gemmi
 
+from pdbx_hierarchy import occupancy
 from pdbx_hierarchy.assignment import assign_from_alt_ids
 from pdbx_hierarchy.exceptions import HierarchyNotFoundError, PdbxParseError, PdbxValidationError
 from pdbx_hierarchy.io.reader import (
@@ -147,7 +148,8 @@ def merge_states(
         ground_path: The ground-state input.
         changed_path: The changed-state input.
         occ: The changed state's fraction of the crystal, ``0 < occ < 1``.
-            Recorded as provenance here; the arithmetic it drives is separate.
+            Ground occupancies are scaled by ``1 - occ`` and changed occupancies
+            by ``occ``; the value is also recorded as provenance.
         output_path: Where to write the merged file. Its stem becomes both the
             data block name and ``_entry.id``.
 
@@ -157,9 +159,11 @@ def merge_states(
     Raises:
         FileNotFoundError: If either input does not exist.
         PdbxParseError: If an input is malformed or contains no atoms.
-        PdbxValidationError: If the two inputs define the same chemical
-            component with differing formulae, or if the assembled file's atom
-            order cannot be reconciled with the hierarchy assignments.
+        PdbxValidationError: If either input has an atom position whose
+            occupancies already sum above ``1.00``, if the two inputs define the
+            same chemical component with differing formulae, or if the assembled
+            file's atom order cannot be reconciled with the hierarchy
+            assignments.
     """
     ground = load_source(ground_path)
     changed = load_source(changed_path)
@@ -168,6 +172,7 @@ def merge_states(
     _rename_root(changed, CHANGED_STATE_ID, CHANGED_STATE_NAME)
     changed_id_map = _deconflict_state_ids(ground.tree, changed)
 
+    occupancy_notes = _scale_occupancies(ground, changed, occ)
     tree = _build_merged_tree(ground, changed, occ)
     structure, atom_state_ids = _assemble_structure(ground, changed, name=output_path.stem)
     chem_comp = _union_chem_comp([ground, changed])
@@ -180,6 +185,7 @@ def merge_states(
         for source in (ground, changed)
         if source.reused_hierarchy
     ]
+    notes.extend(occupancy_notes)
     return MergeReport(output_path=output_path, tree=tree, changed_id_map=changed_id_map, notes=notes)
 
 
@@ -463,6 +469,48 @@ def _provenance_token(path: Path) -> str:
     return re.sub(r"\s+", "_", path.name)
 
 
+# === Occupancy ===
+
+
+def _scale_occupancies(ground: SourceModel, changed: SourceModel, occ: float) -> list[str]:
+    """Give each input its share of the crystal, in place.
+
+    Runs before assembly, on each input separately, because that is where an
+    atom's provenance still says which factor it gets. Scaling the assembled
+    structure instead would need the ground/changed split threaded through it,
+    and each input's own occupancies are what the input validation is about.
+
+    Doing it per input is also what makes the merged bound hold without any
+    cross-input arithmetic: each input group is held to the floor of its exact
+    share, and the two shares sum to the whole. See the ``occupancy`` module.
+
+    Args:
+        ground: The ground model, scaled by ``1 - occ``.
+        changed: The changed model, scaled by ``occ``.
+        occ: The changed state's fraction of the crystal.
+
+    Returns:
+        Notes worth reporting to the user — at most one, carrying the count of
+        zero-occupancy atoms across both inputs.
+
+    Raises:
+        PdbxValidationError: If either input has an atom position whose
+            occupancies already sum above ``1.00``.
+    """
+    changed_factor = occupancy.to_hundredths(occ)
+    ground_factor = occupancy.HUNDREDTHS_PER_UNIT - changed_factor
+
+    zero_count = 0
+    for source, factor in ((ground, ground_factor), (changed, changed_factor)):
+        groups = occupancy.position_groups(_iter_atoms(source.structure))
+        zero_count += occupancy.check_input_occupancies(groups, label=source.path.name)
+        occupancy.apply_scaling(groups, factor=factor)
+
+    if zero_count == 0:
+        return []
+    return [f"{zero_count} atom(s) carry zero occupancy in the inputs and are written as 0.00"]
+
+
 # === Coordinate assembly ===
 
 
@@ -543,9 +591,9 @@ def _number_entities(structure: gemmi.Structure) -> None:
     gemmi names a regenerated entity after the content it found — ``water``, or
     ``EDO!`` for a non-polymer — and writes that name into
     ``_atom_site.label_entity_id``, where the convention is an integer. The
-    merged file drops ``_entity`` itself (see OUTPUT_CATEGORIES), so these values
-    define nothing either way; numbering them keeps the column conventional
-    rather than exposing gemmi's internal naming.
+    merged file carries ``_entity`` itself, so the same name lands in
+    ``_entity.id`` too; numbering keeps both columns conventional rather than
+    exposing gemmi's internal naming.
 
     Args:
         structure: The assembled structure, after ``setup_entities``.
@@ -639,9 +687,26 @@ def _build_document(
         block.set_mmcif_category("_chem_comp.", chem_comp, raw=True)
 
     _check_walk_matches_rows("the merged file", block, structure)
+    _write_two_decimal_occupancies(block)
     write_hierarchy(block, tree, overwrite=True)
     write_atom_site_heterogeneity_ids(block, atom_state_ids, overwrite=True)
     return doc
+
+
+def _write_two_decimal_occupancies(block: gemmi.cif.Block) -> None:
+    """Rewrite the occupancy column with two decimal places on every row.
+
+    gemmi trims a trailing zero, writing ``0.4`` where every other coordinate
+    file in a crystallographer's directory says ``0.40``. The scaled values are
+    whole hundredths by construction, so this only restores the notation; it
+    changes no number.
+
+    Args:
+        block: The merged file's block, after the coordinates are written.
+    """
+    column = block.find_loop("_atom_site.occupancy")
+    for index, value in enumerate(list(column)):
+        column[index] = f"{float(value):.2f}"
 
 
 def _categories(block: gemmi.cif.Block) -> list[str]:

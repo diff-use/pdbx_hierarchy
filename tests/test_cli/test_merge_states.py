@@ -8,6 +8,7 @@ changed).
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from pathlib import Path
 
@@ -73,6 +74,20 @@ def _categories(path: Path) -> set[str]:
 def _column(path: Path, tag: str) -> list[str]:
     block = gemmi.cif.read(str(path)).sole_block()
     return list(block.find_loop(tag))
+
+
+def _position_sums(path: Path) -> dict[tuple[str, str, str], int]:
+    """Sum the written occupancies, in hundredths, over each atom position.
+
+    The key is the occupancy group of the spec: authored chain and residue number
+    plus atom name, with comp_id deliberately left out.
+    """
+    columns = ("auth_asym_id", "auth_seq_id", "label_atom_id", "occupancy")
+    chains, residues, atoms, occupancies = (_column(path, f"_atom_site.{tag}") for tag in columns)
+    sums: dict[tuple[str, str, str], int] = {}
+    for chain, residue, atom, value in zip(chains, residues, atoms, occupancies, strict=True):
+        sums[(chain, residue, atom)] = sums.get((chain, residue, atom), 0) + round(float(value) * 100)
+    return sums
 
 
 class TestTree:
@@ -335,6 +350,91 @@ class TestAtoms:
                 assert state in {"Ground", "Changed"}
             else:
                 assert state in {"A", "B", "C", "D"}
+
+
+class TestOccupancy:
+    def test_each_branch_carries_its_share(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        out = tmp_path / "merged.cif"
+        assert _merge(runner, app, pair, out)[0] == 0
+        tree = read_hierarchy(out)
+        ground_ids = {"Ground"} | {s.id for s in tree.get_descendants("Ground")}
+        occupancies = _column(out, "_atom_site.occupancy")
+        assigned = read_atom_site_heterogeneity_ids(out)
+        by_branch: dict[str, set[str]] = {"ground": set(), "changed": set()}
+        for value, state in zip(occupancies, assigned, strict=True):
+            by_branch["ground" if state in ground_ids else "changed"].add(value)
+        # Every fixture atom is at 1.00 except the SER conformers at 0.50.
+        assert by_branch["ground"] == {"0.40", "0.20"}
+        assert by_branch["changed"] == {"0.60", "0.30"}
+
+    def test_occupancies_are_written_to_two_decimal_places(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        out = tmp_path / "merged.cif"
+        assert _merge(runner, app, pair, out)[0] == 0
+        for value in _column(out, "_atom_site.occupancy"):
+            assert re.fullmatch(r"\d\.\d\d", value), value
+
+    def test_no_position_sums_above_one(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        out = tmp_path / "merged.cif"
+        assert _merge(runner, app, pair, out)[0] == 0
+        for key, total in _position_sums(out).items():
+            assert total <= 100, f"{key} sums to {total} hundredths"
+
+    def test_a_position_present_in_both_inputs_sums_to_exactly_one(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        out = tmp_path / "merged.cif"
+        assert _merge(runner, app, pair, out)[0] == 0
+        sums = _position_sums(out)
+        assert sums[("A", "1", "CA")] == 100  # polymer atom, both inputs
+        assert sums[("A", "2", "CA")] == 100  # two conformers in each input
+        # comp_id is not part of the key, so the ground EDO's C1 and the changed
+        # W2S's C1 at auth_seq_id 101 are one position and share the whole.
+        assert sums[("A", "101", "C1")] == 100
+
+    def test_a_position_only_one_input_models_keeps_its_partial_share(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        out = tmp_path / "merged.cif"
+        assert _merge(runner, app, pair, out)[0] == 0
+        sums = _position_sums(out)
+        assert sums[("A", "101", "O2")] == 40  # ground EDO only
+        assert sums[("A", "101", "N1")] == 60  # changed W2S only
+
+    def test_an_input_position_above_one_is_rejected(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        ground, changed = pair
+        # Push the SER 2 CA conformers to 0.50 / 0.51: a modelling error scaling
+        # cannot repair, so it must stop the merge rather than be folded in.
+        ground.write_text(ground.read_text().replace("5.100 1.200 1.000 0.50", "5.100 1.200 1.000 0.51"))
+        code, output = _merge(runner, app, pair, tmp_path / "merged.cif")
+        assert code == 1
+        assert "chain A" in output
+        assert "residue 2" in output
+        assert "atom CA" in output
+
+    def test_a_zero_occupancy_input_atom_is_reported_once_with_a_count(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        ground, changed = pair
+        ground.write_text(ground.read_text().replace("1.00 20.00 1   A 1", "0.00 20.00 1   A 1"))
+        out = tmp_path / "merged.cif"
+        result = runner.invoke(
+            app,
+            ["merge-states", "--ground", str(ground), "--changed", str(changed), "--occ", "0.60", "-o", str(out), "-y"],
+        )
+        assert result.exit_code == 0, result.output + result.stderr
+        # Four ALA atoms are zeroed, and they are reported once between them with
+        # a count rather than once each.
+        assert result.stderr.count("zero occupancy") == 1
+        assert "4 atom" in result.stderr
+        assert _column(out, "_atom_site.occupancy").count("0.00") == 4
 
 
 class TestTableSet:
