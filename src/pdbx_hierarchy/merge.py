@@ -35,6 +35,7 @@ from pdbx_hierarchy import altloc, numbering, occupancy
 from pdbx_hierarchy.assignment import assign_from_alt_ids
 from pdbx_hierarchy.exceptions import HierarchyNotFoundError, PdbxParseError, PdbxValidationError
 from pdbx_hierarchy.io.reader import (
+    UNSET_VALUES,
     count_atom_site_rows,
     count_coexistence_rules,
     has_hierarchy,
@@ -1044,7 +1045,7 @@ def _write_two_decimal_occupancies(block: gemmi.cif.Block) -> None:
     for index, value in enumerate(list(column)):
         # gemmi writes this column from the structure, so every cell is a number.
         # An unknown marker is left as it is rather than crashing on float().
-        if value in {".", "?"}:
+        if value in UNSET_VALUES:
             continue
         column[index] = f"{float(value):.2f}"
 

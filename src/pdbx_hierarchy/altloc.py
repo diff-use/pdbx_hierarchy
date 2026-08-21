@@ -1,4 +1,8 @@
-"""Partition the altloc alphabet between a merge's two inputs.
+"""Spend the altloc alphabet: partition it between a merge's two inputs, or leave it.
+
+Both things this module does are about the same scarce resource, and change for
+the same reason — the partition hands out the 62 single-character labels, and the
+widening is the exit for a file those labels cannot serve.
 
 Every atom in a merged file carries a real ``label_alt_id``, blanks included, so
 that a reader knowing nothing about the hierarchy extension sees a coherent
@@ -42,6 +46,14 @@ The partition never touches hierarchy state ids, which are a separate namespace
 that happens to draw on overlapping characters, and it must run *after* state
 assignment: inference reads ``label_alt_id``, so relabelling first would read
 almost every atom in a typical model as a conformer.
+
+:func:`widen_file` is that exit — the one function of it a caller needs — for a
+user whose downstream reader folds case.
+It is the other end of the same trade — it gives up gemmi as a write path and any
+route back into the extended alphabet, and buys labels that survive a
+case-insensitive comparison. It is not on the CLI for exactly that reason: a
+command whose output gemmi cannot read back is a different kind of thing from the
+commands around it.
 """
 
 from __future__ import annotations
@@ -49,12 +61,16 @@ from __future__ import annotations
 import string
 from typing import TYPE_CHECKING
 
+import gemmi
+
 from pdbx_hierarchy.exceptions import PdbxValidationError
+from pdbx_hierarchy.io.reader import UNSET_VALUES, read_mmcif
+from pdbx_hierarchy.io.writer import write_mmcif
+from pdbx_hierarchy.models.id_generator import HierarchyIdGenerator
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
-
-    import gemmi
+    from pathlib import Path
 
 #: The label a file uses for "this atom has no alternate conformation".
 BLANK_ALT_ID = "."
@@ -62,6 +78,21 @@ BLANK_ALT_ID = "."
 #: The labels available, in assignment order. Uppercase first because it is the
 #: only part of the range PDBx/mmCIF files use in practice.
 ALPHABET = string.ascii_uppercase + string.ascii_lowercase + string.digits
+
+#: Where each label sits in the alphabet, for ordering. A dict rather than
+#: ``ALPHABET.find``, which is a substring search: it answers 0 for ``"AB"``,
+#: sorting a label that is already widened as though it were ``A``.
+_ALPHABET_POSITION = {label: position for position, label in enumerate(ALPHABET)}
+
+#: Printed alongside a widening's mapping. The two namespaces overlap in the
+#: characters they draw on and in the sequence they draw them in, which is
+#: exactly why saying so is worth the line: a reader looking at a widened file's
+#: ``AA`` has no way to tell from the file alone that the ``AA`` in its hierarchy
+#: table is unrelated.
+WIDENING_NAMESPACE_NOTE = (
+    "hierarchy state ids are a separate namespace and are untouched. "
+    "Where a widened label and a state id happen to read the same, they still name unrelated things"
+)
 
 
 def read_altloc(atom: gemmi.Atom) -> str:
@@ -147,3 +178,127 @@ def relabel(atoms: Iterable[gemmi.Atom], mapping: Mapping[str, str]) -> None:
     """
     for atom in atoms:
         atom.altloc = mapping[read_altloc(atom)]
+
+
+# === Widening: the one-way exit from the extended alphabet ===
+
+
+def _widen_labels(labels: Iterable[str]) -> dict[str, str]:
+    """Map single-character labels onto labels unique under a case fold.
+
+    The new labels are ``A``, ``B``, ..., ``Z``, ``AA``, ``AB``, ... — the
+    sequence :class:`HierarchyIdGenerator` already produces, reused rather than
+    reimplemented. Being all uppercase, they are as distinct to a reader that
+    folds case as to one that does not.
+
+    The whole set is remapped, not only the labels past ``Z``. Widening ``a`` and
+    leaving ``A`` alone would collide the two at whichever label ``a`` landed on
+    if that label were ``A``; more to the point, a file where some labels are one
+    character and others are two is harder to reason about than one where the rule
+    is uniform.
+
+    Args:
+        labels: The labels a file uses. Duplicates and the unset markers ``.`` and
+            ``?`` are ignored; those two mean the atom has no alternate
+            conformation, which is not a label and cannot collide with one.
+
+    Returns:
+        Old -> new label, one entry per distinct label. The old labels are
+        considered in alphabet order, so a file whose labels are a contiguous run
+        from ``A`` maps each onto itself — the common case, a merged file, where
+        the widening is visibly a no-op. A file skipping labels still compacts
+        (``B``, ``D`` -> ``A``, ``B``), and a label outside the alphabet is
+        considered after every label inside it, sorted, rather than being left
+        alone.
+    """
+    distinct = {label for label in labels if label not in UNSET_VALUES}
+    ordered = sorted(distinct, key=_widening_order)
+    # The generator is unbounded, which is the whole point of widening, so the
+    # labels are what runs out first and strict=True would reject every call.
+    return dict(zip(ordered, HierarchyIdGenerator(), strict=False))
+
+
+def _widening_order(label: str) -> tuple[int, int, str]:
+    """Return the sort key placing a label in the order it gets widened.
+
+    Args:
+        label: One of the file's labels.
+
+    Returns:
+        Its alphabet position, or a key sorting it after every label in the
+        alphabet and among its own kind by value.
+    """
+    if label in _ALPHABET_POSITION:
+        return 0, _ALPHABET_POSITION[label], label
+    return 1, 0, label
+
+
+def _widen_block(block: gemmi.cif.Block) -> dict[str, str]:
+    """Widen a block's ``label_alt_id`` column in place.
+
+    ``label_alt_id`` is the only column touched. Nothing else in the table set a
+    merged file carries references an altloc — ``_struct_conn``, which would, is
+    among the categories the merge drops.
+
+    This works on the raw mmCIF column rather than on a
+    :class:`gemmi.Structure` because it has to: ``gemmi.Atom.altloc`` is a single
+    ``char`` and raises on ``"AA"``, so a widened file cannot be held in gemmi's
+    atom model at all. It can still be *parsed* by gemmi at the cif level, which
+    is what this reads and writes.
+
+    Args:
+        block: The data block to widen, mutated in place.
+
+    Returns:
+        Old -> new label, for the caller to print.
+
+    Raises:
+        PdbxValidationError: If the block has no ``_atom_site.label_alt_id``
+            column, leaving nothing to widen.
+    """
+    # Presence is asked of the loop item rather than the column, because a column
+    # is falsy both when the tag is absent and when the loop holds no rows, and
+    # only the first of those is worth an error.
+    if block.find_loop_item("_atom_site.label_alt_id") is None:
+        raise PdbxValidationError(
+            "no _atom_site.label_alt_id column to widen; widening is for a file whose atoms already carry labels"
+        )
+
+    column = block.find_loop("_atom_site.label_alt_id")
+    mapping = _widen_labels(column)
+    for index, label in enumerate(list(column)):
+        if label in UNSET_VALUES:
+            continue
+        column[index] = mapping[label]
+    return mapping
+
+
+def widen_file(source: Path, output: Path) -> dict[str, str]:
+    """Write ``source`` out to ``output`` with its altloc labels widened.
+
+    One-way by design. The output leaves the single-character alphabet for good:
+    nothing here reverses the mapping, and no library reading the result back into
+    a gemmi ``Structure`` can, since the labels no longer fit an atom's ``altloc``
+    field.
+
+    Args:
+        source: The file to widen. Read, never written.
+        output: Where the widened file goes. A separate path rather than an
+            in-place rewrite, so the file that still round-trips through gemmi
+            survives the conversion.
+
+    Returns:
+        Old -> new label, for the caller to print.
+
+    Raises:
+        FileNotFoundError: If ``source`` does not exist.
+        PdbxParseError: If ``source`` is malformed or holds more than one block.
+        PdbxValidationError: If ``source`` has no ``_atom_site.label_alt_id``
+            column.
+    """
+    block = read_mmcif(source)
+    mapping = _widen_block(block)
+    doc = gemmi.cif.Document()
+    doc.add_copied_block(block)
+    write_mmcif(doc, output)
+    return mapping

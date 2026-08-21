@@ -42,7 +42,13 @@ src/pdbx_hierarchy/
 └── cli/                  # Typer CLI
     ├── app.py            # Main Typer app
     └── commands/         # Subcommand modules
+
+scripts/                  # Unpackaged prototype scripts, deliberately off the CLI
+└── widen_altlocs.py      # One-way widening of label_alt_id past gemmi's one-char ceiling
 ```
+
+`scripts/` is outside the package, so type-check it as `uv run mypy src/ scripts/`
+— on its own it cannot resolve `pdbx_hierarchy`, which ships no `py.typed`.
 
 ## Dependencies
 

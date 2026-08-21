@@ -10,6 +10,11 @@ from pdbx_hierarchy.exceptions import HierarchyNotFoundError, PdbxParseError
 from pdbx_hierarchy.models.coexistence import CoexistenceTable
 from pdbx_hierarchy.models.hierarchy import HierarchyTree
 
+#: The two markers mmCIF uses for a value a file declines to give: ``.`` for
+#: "inapplicable" and ``?`` for "unknown". Neither is data, so a transformation
+#: rewriting a column has to leave both alone rather than treat them as values.
+UNSET_VALUES = (".", "?")
+
 # Columns to count _atom_site rows from, in preference order: every real file has
 # at least one of them, whether or not it carries the optional id column.
 _ATOM_SITE_ROW_COUNT_TAGS = (
