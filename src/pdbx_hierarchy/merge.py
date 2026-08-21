@@ -19,8 +19,7 @@ The regenerated ``_entity`` and ``_struct_asym`` are written out with the
 coordinates, because ``_atom_site.label_entity_id`` and ``label_asym_id`` name
 them on every row. Dropping the two tables while keeping those columns is the
 other half of the same trap: not a file that mislabels its components, but a file
-that cannot say what its components are. See ``.scratch/merge-states/findings.md``,
-finding 2.
+that cannot say what its components are.
 """
 
 from __future__ import annotations

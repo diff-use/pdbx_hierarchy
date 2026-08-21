@@ -10,12 +10,19 @@ The alphabet is ``A``-``Z``, then ``a``-``z``, then ``0``-``9``: 62
 single-character labels. Single characters are a hard constraint rather than a
 preference — ``gemmi.Atom.altloc`` is one ``char`` and raises on ``"AA"`` — so a
 pair of inputs needing more than 62 labels between them is a validation error
-naming the count required, not a silent wrap. Both halves of the extension past
-``A``-``Z`` are expedients: lowercase labels collapse into their uppercase
-counterparts under a case-insensitive reader, and digits are unconventional
-enough that a reader treating altloc as a letter may mangle them. See
-``.scratch/merge-states/findings.md``, finding 1, and the one-way widening
-transformation it points at for the way back out.
+naming the count required, not a silent wrap.
+
+Both halves of the extension past ``A``-``Z`` are expedients, and knowingly so.
+``A``-``Z`` is the range PDBx/mmCIF files use in practice; lowercase labels
+collapse into their uppercase counterparts under a reader that folds case,
+silently fusing two unrelated conformations under one label, and digits are
+unconventional enough that a reader treating altloc as a letter may mangle them.
+Three things cannot all hold at once — a single-character ``label_alt_id``, more
+than 26 labels at one position, and safety under a case-insensitive reader — and
+this module keeps the first two. A file that needs the third has to leave the
+extended alphabet altogether, by widening every label to the multi-character
+sequence ``A``...``Z``, ``AA``, ``AB``, ...; that is a one-way exit, because
+gemmi cannot write a multi-character altloc back.
 
 Each input gets a contiguous run of the alphabet — ground from the start, changed
 continuing above it — assigned to that input's **original** labels. Two decisions
