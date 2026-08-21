@@ -26,7 +26,7 @@ The bound follows from the entitlement being a floor: a group summing to ``S``
 hundredths in one input receives ``floor(factor * S / 100)`` hundredths, so with
 ``S <= 100`` in each input and the two factors summing to 100, the merged group
 sums to at most 100. That is why an input group above ``1.00`` is rejected rather
-than repaired — see :func:`check_input_occupancies`.
+than repaired — see :func:`scale_to_share`.
 
 The fold is one-way. Two-decimal output cannot be inverted back to two inputs'
 occupancies, and no inverse is offered.
@@ -52,9 +52,12 @@ HUNDREDTHS_PER_UNIT = 100
 class PositionKey(NamedTuple):
     """What makes one occupancy group: the positions one physical atom can occupy.
 
-    The key is ``(auth_asym_id, auth_seq_id, label_atom_id)``, with the insertion
-    code carried alongside the sequence number because the two together are what
-    authored residue numbering means by "which residue".
+    The key is the spec's ``(auth_asym_id, auth_seq_id, label_atom_id)``, with
+    the insertion code carried alongside the sequence number: authored numbering
+    means residue ``5`` and residue ``5A`` to be two residues, and merging their
+    occupancies would constrain two atoms that never share a position. Carrying
+    it can only split a group the spec would have pooled, never pool one the
+    spec would have split, so the bound is unaffected.
 
     Component id is deliberately *not* part of the key. A ligand in the ground
     model and a different ligand in the changed model, sharing an authored
@@ -63,11 +66,11 @@ class PositionKey(NamedTuple):
     """
 
     auth_asym_id: str
-    #: None only for a residue carrying no sequence number, which assembly
-    #: rejects; such atoms are still grouped rather than dropped on the way there.
+    #: Optional because gemmi types a residue's sequence number as optional.
+    #: Assembly rejects a residue without one; grouping does not need to.
     auth_seq_id: int | None
     insertion_code: str
-    atom_id: str
+    label_atom_id: str
 
 
 def to_hundredths(value: float) -> int:
@@ -135,6 +138,64 @@ def scale_group(occupancies: Sequence[int], *, factor: int) -> list[int]:
     return scaled
 
 
+def split_factors(occ: float) -> tuple[int, int]:
+    """Split the whole crystal between the two states, in hundredths.
+
+    The two factors sum to exactly 100 by construction, which is the premise the
+    merged bound rests on: see the module docstring.
+
+    Args:
+        occ: The changed state's fraction of the crystal, ``0 < occ < 1``.
+
+    Returns:
+        Tuple of (ground factor, changed factor) in hundredths.
+    """
+    changed = to_hundredths(occ)
+    return HUNDREDTHS_PER_UNIT - changed, changed
+
+
+def round_onto_grid(atoms: Iterable[tuple[gemmi.Chain, gemmi.Residue, gemmi.Atom]]) -> None:
+    """Round an input's occupancies onto the hundredths grid, in place.
+
+    Done on read rather than lazily inside the arithmetic, so that no later stage
+    can see a value the merged file could not have expressed anyway. After this
+    an atom's occupancy is exactly what the input file meant to two decimals.
+
+    Args:
+        atoms: A walk over the input's atoms, each with its chain and residue.
+    """
+    for _, _, atom in atoms:
+        atom.occ = from_hundredths(to_hundredths(atom.occ))
+
+
+def scale_to_share(atoms: Iterable[tuple[gemmi.Chain, gemmi.Residue, gemmi.Atom]], *, factor: int, label: str) -> int:
+    """Validate one input's positions, then give it its share of the crystal.
+
+    The three steps belong together: the groups a position is checked over are
+    exactly the groups it is scaled over, and checking without scaling — or
+    scaling an input that was never checked — is never what a caller wants.
+
+    Args:
+        atoms: A walk over the input's atoms, each with its chain and residue.
+        factor: This input's share in hundredths — ``1 - occ`` for the ground
+            model, ``occ`` for the changed one.
+        label: What to call the input in an error message.
+
+    Returns:
+        How many of the input's atoms carry an occupancy of ``0.00``, for the
+        caller to report once with the count rather than once per atom.
+
+    Raises:
+        PdbxValidationError: If any of the input's positions already sums above
+            ``1.00``.
+    """
+    groups = position_groups(atoms)
+    _reject_impossible_positions(groups, label=label)
+    zero_count = sum(1 for atoms_here in groups.values() for atom in atoms_here if to_hundredths(atom.occ) == 0)
+    _apply_scaling(groups, factor=factor)
+    return zero_count
+
+
 def position_groups(
     atoms: Iterable[tuple[gemmi.Chain, gemmi.Residue, gemmi.Atom]],
 ) -> dict[PositionKey, list[gemmi.Atom]]:
@@ -155,7 +216,7 @@ def position_groups(
     return groups
 
 
-def check_input_occupancies(groups: dict[PositionKey, list[gemmi.Atom]], *, label: str) -> int:
+def _reject_impossible_positions(groups: dict[PositionKey, list[gemmi.Atom]], *, label: str) -> None:
     """Reject an input whose own occupancies are already impossible.
 
     Scaling cannot repair a position summing above ``1.00``: handing it a share
@@ -172,29 +233,21 @@ def check_input_occupancies(groups: dict[PositionKey, list[gemmi.Atom]], *, labe
         groups: The input's position groups, from :func:`position_groups`.
         label: What to call the file in the error message.
 
-    Returns:
-        How many atoms carry an occupancy of ``0.00``. Reported once by the
-        caller, with the count, rather than per atom.
-
     Raises:
         PdbxValidationError: If any position sums above ``1.00``.
     """
-    zero_count = 0
     for key, atoms in groups.items():
-        hundredths = [to_hundredths(atom.occ) for atom in atoms]
-        zero_count += sum(1 for value in hundredths if value == 0)
-        total = sum(hundredths)
+        total = sum(to_hundredths(atom.occ) for atom in atoms)
         if total > HUNDREDTHS_PER_UNIT:
             number = "?" if key.auth_seq_id is None else str(key.auth_seq_id)
             residue = f"{number}{key.insertion_code.strip()}"
             raise PdbxValidationError(
-                f"{label}: chain {key.auth_asym_id} residue {residue} atom {key.atom_id} "
+                f"{label}: chain {key.auth_asym_id} residue {residue} atom {key.label_atom_id} "
                 f"has occupancies summing to {from_hundredths(total):.2f}, above 1.00"
             )
-    return zero_count
 
 
-def apply_scaling(groups: dict[PositionKey, list[gemmi.Atom]], *, factor: int) -> None:
+def _apply_scaling(groups: dict[PositionKey, list[gemmi.Atom]], *, factor: int) -> None:
     """Write each group's scaled occupancies back onto its atoms.
 
     Args:

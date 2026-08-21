@@ -29,6 +29,9 @@ uv run mypy src/
 src/pdbx_hierarchy/
 ├── __init__.py
 ├── exceptions.py         # Custom exception hierarchy
+├── assignment.py         # Infer a hierarchy from label_alt_id
+├── merge.py              # Merge a ground and a changed model into one file
+├── occupancy.py          # Integer-hundredths occupancy fold for the merge
 ├── models/
 │   ├── hierarchy.py      # HierarchyState, HierarchyTree
 │   ├── coexistence.py    # StateCoexistence, CoexistenceTable

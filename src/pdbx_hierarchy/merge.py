@@ -241,6 +241,10 @@ def load_source(path: Path) -> SourceModel:
         )
     _check_walk_matches_rows(path.name, block, structure)
 
+    # Everything downstream reasons about occupancy in whole hundredths, so the
+    # input's values are put on that grid here rather than at the point of use.
+    occupancy.round_onto_grid(_iter_atoms(structure))
+
     walk_length = sum(1 for _ in _iter_atoms(structure))
     if walk_length != len(atom_state_ids):
         raise PdbxParseError(
@@ -497,14 +501,11 @@ def _scale_occupancies(ground: SourceModel, changed: SourceModel, occ: float) ->
         PdbxValidationError: If either input has an atom position whose
             occupancies already sum above ``1.00``.
     """
-    changed_factor = occupancy.to_hundredths(occ)
-    ground_factor = occupancy.HUNDREDTHS_PER_UNIT - changed_factor
-
-    zero_count = 0
-    for source, factor in ((ground, ground_factor), (changed, changed_factor)):
-        groups = occupancy.position_groups(_iter_atoms(source.structure))
-        zero_count += occupancy.check_input_occupancies(groups, label=source.path.name)
-        occupancy.apply_scaling(groups, factor=factor)
+    ground_factor, changed_factor = occupancy.split_factors(occ)
+    zero_count = sum(
+        occupancy.scale_to_share(_iter_atoms(source.structure), factor=factor, label=source.path.name)
+        for source, factor in ((ground, ground_factor), (changed, changed_factor))
+    )
 
     if zero_count == 0:
         return []
@@ -706,6 +707,10 @@ def _write_two_decimal_occupancies(block: gemmi.cif.Block) -> None:
     """
     column = block.find_loop("_atom_site.occupancy")
     for index, value in enumerate(list(column)):
+        # gemmi writes this column from the structure, so every cell is a number.
+        # An unknown marker is left as it is rather than crashing on float().
+        if value in {".", "?"}:
+            continue
         column[index] = f"{float(value):.2f}"
 
 

@@ -63,6 +63,22 @@ class TestScaleGroup:
             <= 100
         )
 
+    def test_a_group_gets_no_more_than_its_entitlement(self) -> None:
+        # The bound binding: three atoms at 0.01 are entitled to 0.012 between
+        # them by 0.40, and one hundredth is all the group can have. Rounding
+        # each atom to its nearest value instead would hand out three.
+        assert occupancy.scale_group([1, 1, 1], factor=40) == [1, 0, 0]
+
+    def test_two_full_shares_of_an_awkward_group_land_on_exactly_one(self) -> None:
+        # 0.33 / 0.33 / 0.34 in both inputs at occ=0.60: the ground share needs
+        # one leftover hundredth and the changed share two, and the bound is
+        # still met with nothing to spare.
+        ground = occupancy.scale_group([33, 33, 34], factor=40)
+        changed = occupancy.scale_group([33, 33, 34], factor=60)
+        assert ground == [13, 13, 14]
+        assert changed == [20, 20, 20]
+        assert sum(ground) + sum(changed) == 100
+
     def test_a_group_summing_below_one_stays_below(self) -> None:
         # An atom modelled in only one state: 0.60 of the crystal is all it gets,
         # and nothing tops it up.
@@ -134,15 +150,32 @@ class TestPositionGroups:
         assert len(_groups(structure)) == 2
 
 
-class TestCheckInputOccupancies:
-    def test_a_group_summing_to_one_is_accepted(self) -> None:
-        structure = _structure([("A", 2, "SER", "CA", 0.5), ("A", 2, "SER", "CA", 0.5)])
-        assert occupancy.check_input_occupancies(_groups(structure), label="in.cif") == 0
+class TestSplitFactors:
+    @pytest.mark.parametrize("occ", [0.01, 0.4, 0.5, 0.6, 0.99])
+    def test_the_two_factors_always_sum_to_the_whole(self, occ: float) -> None:
+        assert sum(occupancy.split_factors(occ)) == 100
 
-    def test_a_group_summing_above_one_names_chain_residue_and_atom(self) -> None:
+    def test_the_changed_state_gets_the_occupancy_it_asked_for(self) -> None:
+        assert occupancy.split_factors(0.60) == (40, 60)
+
+
+class TestRoundOntoGrid:
+    def test_an_off_grid_occupancy_is_put_on_the_grid(self) -> None:
+        structure = _structure([("A", 2, "SER", "CA", 0.333)])
+        occupancy.round_onto_grid(_walk(structure))
+        assert [atom.occ for _, _, atom in _walk(structure)] == pytest.approx([0.33])
+
+
+class TestScaleToShare:
+    def test_the_atoms_carry_their_scaled_occupancies(self) -> None:
+        structure = _structure([("A", 2, "SER", "CA", 0.5), ("A", 2, "SER", "CA", 0.5)])
+        assert occupancy.scale_to_share(_walk(structure), factor=60, label="in.cif") == 0
+        assert [atom.occ for _, _, atom in _walk(structure)] == pytest.approx([0.30, 0.30])
+
+    def test_a_position_summing_above_one_names_chain_residue_and_atom(self) -> None:
         structure = _structure([("A", 2, "SER", "CA", 0.5), ("A", 2, "SER", "CA", 0.5), ("A", 2, "SER", "CA", 0.01)])
         with pytest.raises(PdbxValidationError) as excinfo:
-            occupancy.check_input_occupancies(_groups(structure), label="in.cif")
+            occupancy.scale_to_share(_walk(structure), factor=60, label="in.cif")
         message = str(excinfo.value)
         assert "in.cif" in message
         assert "chain A" in message
@@ -150,23 +183,20 @@ class TestCheckInputOccupancies:
         assert "atom CA" in message
         assert "1.01" in message
 
-    def test_a_group_below_one_is_neither_corrected_nor_reported(self) -> None:
+    def test_a_rejected_input_is_left_unscaled(self) -> None:
+        # Validation runs before any atom is written to, so a rejected input is
+        # not left half-folded.
+        structure = _structure([("A", 2, "SER", "CA", 0.6), ("A", 2, "SER", "CA", 0.6)])
+        with pytest.raises(PdbxValidationError):
+            occupancy.scale_to_share(_walk(structure), factor=60, label="in.cif")
+        assert [atom.occ for _, _, atom in _walk(structure)] == pytest.approx([0.6, 0.6])
+
+    def test_a_position_below_one_is_neither_corrected_nor_counted(self) -> None:
         structure = _structure([("A", 2, "SER", "CA", 0.5)])
-        assert occupancy.check_input_occupancies(_groups(structure), label="in.cif") == 0
+        assert occupancy.scale_to_share(_walk(structure), factor=60, label="in.cif") == 0
+        assert [atom.occ for _, _, atom in _walk(structure)] == pytest.approx([0.30])
 
-    def test_zero_occupancy_atoms_are_counted_not_rejected(self) -> None:
+    def test_zero_occupancy_atoms_are_counted_and_pass_through(self) -> None:
         structure = _structure([("A", 2, "SER", "CA", 0.0), ("A", 2, "SER", "CB", 0.0)])
-        assert occupancy.check_input_occupancies(_groups(structure), label="in.cif") == 2
-
-
-class TestApplyScaling:
-    def test_the_atoms_carry_their_scaled_occupancies(self) -> None:
-        structure = _structure([("A", 2, "SER", "CA", 0.5), ("A", 2, "SER", "CA", 0.5)])
-        occupancy.apply_scaling(_groups(structure), factor=60)
-        assert [atom.occ for _, _, atom in _walk(structure)] == pytest.approx([0.30, 0.30])
-
-    def test_an_input_occupancy_off_the_hundredths_grid_is_rounded_first(self) -> None:
-        structure = _structure([("A", 2, "SER", "CA", 0.333)])
-        occupancy.apply_scaling(_groups(structure), factor=60)
-        # 0.333 rounds to 0.33 on read, and 0.33 * 0.60 floors to 0.19.
-        assert [atom.occ for _, _, atom in _walk(structure)] == pytest.approx([0.19])
+        assert occupancy.scale_to_share(_walk(structure), factor=60, label="in.cif") == 2
+        assert [atom.occ for _, _, atom in _walk(structure)] == pytest.approx([0.0, 0.0])
