@@ -21,6 +21,8 @@ from pdbx_hierarchy.altloc import ALPHABET
 from pdbx_hierarchy.io.reader import read_atom_site_heterogeneity_ids, read_hierarchy
 
 MERGED_NAME = "merge_changed_merge_ground_hierarchy.cif"
+GROUND_INTERMEDIATE = "merge_ground_hierarchy.cif"
+CHANGED_INTERMEDIATE = "merge_changed_hierarchy.cif"
 
 ALLOWED_CATEGORIES = {
     "_entry.",
@@ -40,7 +42,42 @@ def pair(copy_fixture: Callable[[str], Path]) -> tuple[Path, Path]:
     return copy_fixture("merge_ground.cif"), copy_fixture("merge_changed.cif")
 
 
-def _merge(runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], out: Path, *extra: str) -> tuple[int, str]:
+@pytest.fixture
+def work(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Run from a directory that is neither the inputs' nor the output's.
+
+    The intermediates land in the working directory, so telling all three apart
+    is the only way to assert that.
+    """
+    directory = tmp_path / "work"
+    directory.mkdir()
+    monkeypatch.chdir(directory)
+    return directory
+
+
+def _merge(
+    runner: CliRunner,
+    app: typer.Typer,
+    pair: tuple[Path, Path],
+    out: Path,
+    *extra: str,
+    yes: bool = True,
+    answer: str | None = None,
+) -> tuple[int, str]:
+    """Invoke ``merge-states`` on the fixture pair.
+
+    Args:
+        runner: The CLI runner.
+        app: The CLI app.
+        pair: The ground/changed inputs.
+        out: The ``-o`` path.
+        extra: Further command-line arguments.
+        yes: If False, omit ``-y`` so the overwrite prompt is left to fire.
+        answer: What to feed that prompt on stdin.
+
+    Returns:
+        Tuple of (exit code, stdout and stderr together).
+    """
     ground, changed = pair
     result = runner.invoke(
         app,
@@ -54,9 +91,10 @@ def _merge(runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], out: Pa
             "0.60",
             "-o",
             str(out),
-            "-y",
+            *(["-y"] if yes else []),
             *extra,
         ],
+        input=answer,
     )
     return result.exit_code, result.output + result.stderr
 
@@ -105,6 +143,13 @@ def _residues_by_branch(path: Path) -> tuple[set[tuple[str, int, str]], set[tupl
     for chain, number, comp, state in rows:
         (ground if state in ground_ids else changed).add((chain, int(number), comp))
     return ground, changed
+
+
+def _residues(path: Path) -> set[tuple[str, int, str]]:
+    """Return the authored residues of a file as ``(auth_asym_id, auth_seq_id, label_comp_id)``."""
+    columns = ("auth_asym_id", "auth_seq_id", "label_comp_id")
+    chains, numbers, comps = (_column(path, f"_atom_site.{tag}") for tag in columns)
+    return {(chain, int(number), comp) for chain, number, comp in zip(chains, numbers, comps, strict=True)}
 
 
 def _add_altloc_atoms(path: Path, labels: str) -> None:
@@ -801,6 +846,278 @@ class TestOutputPaths:
         )
         assert result.exit_code != 0
         assert out.read_text() == "placeholder\n"
+
+
+class TestKeepIntermediates:
+    """``--keep-intermediates``: each input as a standalone single-state file.
+
+    An intermediate shows one model on its own, already wearing every label it
+    will have in the merged output. Opening one in a viewer shows the model as it
+    was refined; comparing one against the merged file traces any atom back to
+    its source, which is what makes the label agreement asserted here the point
+    of the whole flag.
+    """
+
+    def test_an_intermediate_is_written_for_each_input(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path, work: Path
+    ) -> None:
+        code, output = _merge(runner, app, pair, tmp_path / "merged.cif", "--keep-intermediates")
+        assert code == 0, output
+        assert (work / GROUND_INTERMEDIATE).exists()
+        assert (work / CHANGED_INTERMEDIATE).exists()
+
+    def test_intermediates_stay_in_the_working_directory_when_output_moves_the_merged_file(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path, work: Path
+    ) -> None:
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        out = elsewhere / "merged.cif"
+        assert _merge(runner, app, pair, out, "--keep-intermediates")[0] == 0
+        # -o directs the primary output only; the intermediates are not dragged
+        # along with it, so a run started here leaves its side files here.
+        assert out.exists()
+        assert not (elsewhere / GROUND_INTERMEDIATE).exists()
+        assert (work / GROUND_INTERMEDIATE).exists()
+        assert (work / CHANGED_INTERMEDIATE).exists()
+
+    def test_nothing_extra_is_written_without_the_flag(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path, work: Path
+    ) -> None:
+        assert _merge(runner, app, pair, tmp_path / "merged.cif")[0] == 0
+        assert list(work.iterdir()) == []
+
+    def test_each_intermediate_is_rooted_at_its_own_state(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path, work: Path
+    ) -> None:
+        assert _merge(runner, app, pair, tmp_path / "merged.cif", "--keep-intermediates")[0] == 0
+        # Deliberately not Base: individually each file *is* rooted at that state,
+        # and a Base above it only means something in the context of the pair.
+        ground_root = read_hierarchy(work / GROUND_INTERMEDIATE).get_root()
+        changed_root = read_hierarchy(work / CHANGED_INTERMEDIATE).get_root()
+        assert (ground_root.id, ground_root.name) == ("Ground", "ground_state")
+        assert (changed_root.id, changed_root.name) == ("Changed", "changed_state")
+
+    def test_no_base_state_appears_in_an_intermediate(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path, work: Path
+    ) -> None:
+        assert _merge(runner, app, pair, tmp_path / "merged.cif", "--keep-intermediates")[0] == 0
+        for name in (GROUND_INTERMEDIATE, CHANGED_INTERMEDIATE):
+            assert not read_hierarchy(work / name).contains("Base"), name
+
+    def test_state_ids_and_names_match_the_merged_output(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path, work: Path
+    ) -> None:
+        out = tmp_path / "merged.cif"
+        assert _merge(runner, app, pair, out, "--keep-intermediates")[0] == 0
+        merged = read_hierarchy(out)
+        for name, branch in ((GROUND_INTERMEDIATE, "Ground"), (CHANGED_INTERMEDIATE, "Changed")):
+            tree = read_hierarchy(work / name)
+            # The deconfliction of step 3 happens before the intermediates are
+            # written, so the changed input's C/D are already C/D here.
+            assert {(s.id, s.name) for s in tree.states} == {
+                (s.id, s.name) for s in [merged.get_state(branch), *merged.get_descendants(branch)]
+            }
+
+    def test_per_atom_state_assignments_match_the_merged_output(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path, work: Path
+    ) -> None:
+        out = tmp_path / "merged.cif"
+        assert _merge(runner, app, pair, out, "--keep-intermediates")[0] == 0
+        merged = read_hierarchy(out)
+        ground_ids = {"Ground"} | {s.id for s in merged.get_descendants("Ground")}
+        assigned = read_atom_site_heterogeneity_ids(out)
+        from_merged = [state for state in assigned if state in ground_ids]
+        assert read_atom_site_heterogeneity_ids(work / GROUND_INTERMEDIATE) == from_merged
+
+    def test_altloc_labels_match_the_merged_output(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path, work: Path
+    ) -> None:
+        out = tmp_path / "merged.cif"
+        assert _merge(runner, app, pair, out, "--keep-intermediates")[0] == 0
+        ground_labels, changed_labels = _labels_by_branch(out)
+        assert set(_column(work / GROUND_INTERMEDIATE, "_atom_site.label_alt_id")) == ground_labels == {"A", "B", "C"}
+        assert set(_column(work / CHANGED_INTERMEDIATE, "_atom_site.label_alt_id")) == changed_labels == {"D", "E", "F"}
+
+    def test_non_polymer_numbering_matches_the_merged_output(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path, work: Path
+    ) -> None:
+        out = tmp_path / "merged.cif"
+        assert _merge(runner, app, pair, out, "--keep-intermediates")[0] == 0
+        ground_residues, changed_residues = _residues_by_branch(out)
+        assert _residues(work / GROUND_INTERMEDIATE) == ground_residues
+        # The renumbering of step 5 has already run, so the changed input's W2S
+        # sits at 102 here exactly as it does in the merged file.
+        assert _residues(work / CHANGED_INTERMEDIATE) == changed_residues
+        assert ("A", 102, "W2S") in _residues(work / CHANGED_INTERMEDIATE)
+
+    def test_occupancies_are_the_originals_unscaled(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path, work: Path
+    ) -> None:
+        assert _merge(runner, app, pair, tmp_path / "merged.cif", "--keep-intermediates")[0] == 0
+        # Scaling is a property of the pair and meaningless in a file holding one
+        # member of it, so the fixture's 1.00 and 0.50 survive rather than
+        # becoming the merged file's 0.40 / 0.20 and 0.60 / 0.30.
+        for name in (GROUND_INTERMEDIATE, CHANGED_INTERMEDIATE):
+            assert set(_column(work / name, "_atom_site.occupancy")) == {"1.00", "0.50"}, name
+
+    def test_the_merged_file_is_still_scaled(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path, work: Path
+    ) -> None:
+        out = tmp_path / "merged.cif"
+        assert _merge(runner, app, pair, out, "--keep-intermediates")[0] == 0
+        assert set(_column(out, "_atom_site.occupancy")) == {"0.40", "0.20", "0.60", "0.30"}
+
+    def test_each_intermediate_holds_only_its_own_input_atoms(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path, work: Path
+    ) -> None:
+        assert _merge(runner, app, pair, tmp_path / "merged.cif", "--keep-intermediates")[0] == 0
+        ground_comps = _column(work / GROUND_INTERMEDIATE, "_atom_site.label_comp_id")
+        changed_comps = _column(work / CHANGED_INTERMEDIATE, "_atom_site.label_comp_id")
+        assert len(ground_comps) == 19
+        assert len(changed_comps) == 19
+        assert "EDO" in ground_comps
+        assert "W2S" not in ground_comps
+        assert "W2S" in changed_comps
+        assert "EDO" not in changed_comps
+
+    def test_each_intermediate_passes_the_validate_command(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path, work: Path
+    ) -> None:
+        assert _merge(runner, app, pair, tmp_path / "merged.cif", "--keep-intermediates")[0] == 0
+        for name in (GROUND_INTERMEDIATE, CHANGED_INTERMEDIATE):
+            result = runner.invoke(app, ["validate", str(work / name)])
+            assert result.exit_code == 0, name + ": " + result.output + result.stderr
+
+    def test_each_intermediate_opens_as_a_standalone_model(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path, work: Path
+    ) -> None:
+        assert _merge(runner, app, pair, tmp_path / "merged.cif", "--keep-intermediates")[0] == 0
+        for name in (GROUND_INTERMEDIATE, CHANGED_INTERMEDIATE):
+            structure = gemmi.read_structure(str(work / name))
+            assert len(structure) == 1
+            assert sum(1 for chain in structure[0] for residue in chain for _ in residue) == 19
+            # Nothing in the file may reference bookkeeping the file does not carry.
+            path = work / name
+            assert set(_column(path, "_atom_site.label_entity_id")) <= set(_column(path, "_entity.id"))
+            assert set(_column(path, "_atom_site.label_asym_id")) <= set(_column(path, "_struct_asym.id"))
+
+    def test_intermediates_carry_the_merged_files_table_set(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path, work: Path
+    ) -> None:
+        assert _merge(runner, app, pair, tmp_path / "merged.cif", "--keep-intermediates")[0] == 0
+        for name in (GROUND_INTERMEDIATE, CHANGED_INTERMEDIATE):
+            assert _categories(work / name) == ALLOWED_CATEGORIES, name
+
+    def test_chem_comp_covers_only_the_inputs_own_components(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path, work: Path
+    ) -> None:
+        assert _merge(runner, app, pair, tmp_path / "merged.cif", "--keep-intermediates")[0] == 0
+        # The union is the merged file's business; an intermediate defines what it
+        # contains, so the other input's ligand is not declared here.
+        assert set(_column(work / GROUND_INTERMEDIATE, "_chem_comp.id")) == {"ALA", "SER", "GLY", "EDO"}
+        assert set(_column(work / CHANGED_INTERMEDIATE, "_chem_comp.id")) == {"ALA", "SER", "GLY", "W2S"}
+
+    def test_entry_id_and_block_name_are_the_intermediates_own_stem(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path, work: Path
+    ) -> None:
+        assert _merge(runner, app, pair, tmp_path / "merged.cif", "--keep-intermediates")[0] == 0
+        for name in (GROUND_INTERMEDIATE, CHANGED_INTERMEDIATE):
+            block = gemmi.cif.read(str(work / name)).sole_block()
+            # The input's own _entry.id would otherwise ride along on the clone and
+            # name a different file than the block does.
+            assert block.name == Path(name).stem
+            assert gemmi.cif.as_string(block.find_value("_entry.id")) == Path(name).stem
+
+    def test_every_written_path_is_printed(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path, work: Path
+    ) -> None:
+        out = tmp_path / "merged.cif"
+        code, output = _merge(runner, app, pair, out, "--keep-intermediates")
+        assert code == 0, output
+        assert str(out) in output
+        assert str(work / GROUND_INTERMEDIATE) in output
+        assert str(work / CHANGED_INTERMEDIATE) in output
+
+    def test_yes_covers_all_three_files(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path, work: Path
+    ) -> None:
+        out = tmp_path / "merged.cif"
+        targets = [out, work / GROUND_INTERMEDIATE, work / CHANGED_INTERMEDIATE]
+        for target in targets:
+            target.write_text("placeholder\n")
+        code, output = _merge(runner, app, pair, out, "--keep-intermediates")
+        assert code == 0, output
+        for target in targets:
+            assert target.read_text() != "placeholder\n", target
+
+    def test_one_confirmation_covers_all_three_files(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path, work: Path
+    ) -> None:
+        out = tmp_path / "merged.cif"
+        targets = [out, work / GROUND_INTERMEDIATE, work / CHANGED_INTERMEDIATE]
+        for target in targets:
+            target.write_text("placeholder\n")
+        code, output = _merge(runner, app, pair, out, "--keep-intermediates", yes=False, answer="y\n")
+        assert code == 0, output
+        # A run must not stop three times to ask about overwrites.
+        assert output.count("Overwrite") == 1
+        for target in targets:
+            assert target.read_text() != "placeholder\n", target
+
+    def test_declining_the_confirmation_writes_nothing(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path, work: Path
+    ) -> None:
+        out = tmp_path / "merged.cif"
+        # Only an intermediate exists, so the prompt has to consider more than the
+        # merged file to fire at all.
+        existing = work / CHANGED_INTERMEDIATE
+        existing.write_text("placeholder\n")
+        code, _ = _merge(runner, app, pair, out, "--keep-intermediates", yes=False, answer="n\n")
+        assert code != 0
+        assert existing.read_text() == "placeholder\n"
+        assert not out.exists()
+        assert not (work / GROUND_INTERMEDIATE).exists()
+
+    def test_two_inputs_sharing_a_stem_is_a_usage_error(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path, work: Path
+    ) -> None:
+        ground, changed = pair
+        # Both intermediates would resolve to one path, and the second would
+        # silently overwrite the first.
+        twin = tmp_path / "twin"
+        twin.mkdir()
+        clash = twin / ground.name
+        clash.write_text(changed.read_text())
+        result = runner.invoke(
+            app,
+            [
+                "merge-states",
+                "--ground",
+                str(ground),
+                "--changed",
+                str(clash),
+                "--occ",
+                "0.60",
+                "-o",
+                str(tmp_path / "merged.cif"),
+                "--keep-intermediates",
+                "-y",
+            ],
+        )
+        assert result.exit_code == 2, result.output + result.stderr
+        assert GROUND_INTERMEDIATE in (result.output + result.stderr)
+
+    def test_a_failed_merge_leaves_no_intermediates_behind(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path, work: Path
+    ) -> None:
+        ground, changed = pair
+        # The conflicting-formula check runs after the intermediates are built but
+        # before anything is written, so a run that fails writes no files at all.
+        changed.write_text(changed.read_text().replace("ALA 'C3 H7 N O2'", "ALA 'C9 H9 N O9'"))
+        code, output = _merge(runner, app, pair, tmp_path / "merged.cif", "--keep-intermediates")
+        assert code == 1
+        assert "ALA" in output
+        assert list(work.iterdir()) == []
 
 
 class TestUsage:

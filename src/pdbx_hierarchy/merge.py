@@ -140,6 +140,8 @@ class MergeReport:
         altloc_maps: Each input's altloc relabelling, ground first.
         nonpolymer_shift: The offset applied to the changed input's non-polymer
             residue numbers.
+        intermediate_paths: Where each input's standalone file was written,
+            ground first; empty when none were asked for.
         notes: Human-readable observations worth printing.
     """
 
@@ -148,6 +150,7 @@ class MergeReport:
     changed_id_map: dict[str, str]
     nonpolymer_shift: numbering.NonPolymerShift
     altloc_maps: list[AltlocMap] = field(default_factory=list)
+    intermediate_paths: list[Path] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
 
@@ -157,6 +160,7 @@ def merge_states(
     changed_path: Path,
     occ: float,
     output_path: Path,
+    intermediate_dir: Path | None = None,
 ) -> MergeReport:
     """Merge a ground and a changed model into one hierarchical file.
 
@@ -168,6 +172,10 @@ def merge_states(
             by ``occ``; the value is also recorded as provenance.
         output_path: Where to write the merged file. Its stem becomes both the
             data block name and ``_entry.id``.
+        intermediate_dir: Where to write each input as a standalone single-state
+            file, named by :func:`intermediate_path`. None writes none. This is
+            independent of ``output_path`` on purpose: ``-o`` directs the primary
+            output, and the intermediates stay where the run was started.
 
     Returns:
         A MergeReport describing what was written.
@@ -192,13 +200,20 @@ def merge_states(
     altloc_maps = _partition_altlocs(ground, changed)
     nonpolymer_shift = _renumber_non_polymers(ground, changed)
 
+    # Built here, at its place in the step order, but written at the end: the
+    # occupancy scaling that comes next is what an intermediate must not show, and
+    # a run that fails after this point should leave no files behind at all.
+    intermediates = _build_intermediates(ground, changed, intermediate_dir)
+
     occupancy_notes = _scale_occupancies(ground, changed, occ)
     tree = _build_merged_tree(ground, changed, occ)
     structure, atom_state_ids = _assemble_structure(ground, changed, name=output_path.stem)
     chem_comp = _union_chem_comp([ground, changed])
 
-    doc = _build_document(structure, tree, atom_state_ids, chem_comp)
+    doc = _build_document(structure, tree, atom_state_ids, chem_comp, label="the merged file")
     write_mmcif(doc, output_path)
+    for path, intermediate_doc in intermediates:
+        write_mmcif(intermediate_doc, path)
 
     notes = [
         f"{source.path.name}: reused the hierarchy already in the file"
@@ -212,6 +227,7 @@ def merge_states(
         changed_id_map=changed_id_map,
         nonpolymer_shift=nonpolymer_shift,
         altloc_maps=altloc_maps,
+        intermediate_paths=[path for path, _ in intermediates],
         notes=notes,
     )
 
@@ -617,6 +633,93 @@ def _scale_occupancies(ground: SourceModel, changed: SourceModel, occ: float) ->
     return [f"{zero_count} atom(s) carry zero occupancy in the inputs and are written as 0.00"]
 
 
+# === Intermediates ===
+
+
+def intermediate_path(source_path: Path, directory: Path) -> Path:
+    """Return where one input's standalone file goes.
+
+    The one place the name is decided, so that what the CLI offers to overwrite
+    and what the merge actually writes cannot drift apart.
+
+    Args:
+        source_path: The input the intermediate is derived from.
+        directory: The directory to write it into.
+
+    Returns:
+        ``<directory>/<stem>_hierarchy.cif``.
+    """
+    return directory / f"{source_path.stem}_hierarchy.cif"
+
+
+def _build_intermediates(
+    ground: SourceModel,
+    changed: SourceModel,
+    directory: Path | None,
+) -> list[tuple[Path, gemmi.cif.Document]]:
+    """Build each input's standalone single-state file, ground first.
+
+    Args:
+        ground: The ground model, remapped through steps 2-5.
+        changed: The changed model, likewise.
+        directory: Where the files go, or None to build none.
+
+    Returns:
+        One (path, document) pair per input, ready to write.
+
+    Raises:
+        PdbxParseError: If an input's atom order cannot be reconciled with its
+            state assignments.
+    """
+    if directory is None:
+        return []
+    paths = [intermediate_path(source.path, directory) for source in (ground, changed)]
+    return [(path, _build_intermediate(source, path)) for source, path in zip((ground, changed), paths, strict=True)]
+
+
+def _build_intermediate(source: SourceModel, path: Path) -> gemmi.cif.Document:
+    """Render one input on its own, wearing the labels it will have when merged.
+
+    The tree is the input's own, rooted at ``Ground`` or ``Changed`` with no
+    ``Base``. That knowingly departs from the format document's "the root should
+    be ``Base``": individually each file *is* rooted at that state, and a ``Base``
+    above it only means something in the context of the pair. The tree model
+    requires a single parentless root but not the literal id, so these files
+    validate.
+
+    Everything remapped by steps 2-5 is carried over — state ids and names,
+    altloc labels, non-polymer residue numbers — because tracing into the merged
+    file is what an intermediate is for. Occupancies are not: this runs before the
+    scaling, so the file keeps the values the model was refined with.
+
+    Args:
+        source: The model to render. Its structure is cloned rather than used, so
+            the entity regeneration here cannot disturb the merge that follows.
+        path: Where the file will go; its stem names the block and ``_entry.id``.
+
+    Returns:
+        The document to write.
+
+    Raises:
+        PdbxParseError: If the written atom order does not match the walk the
+            state assignments were built from.
+    """
+    structure = source.structure.clone()
+    structure.name = path.stem
+    # The clone carries the input's own _entry.id, which would leave the block
+    # named after the intermediate and the entry named after the deposition it
+    # came from. The merged file names both after its stem; these do too.
+    structure.info["_entry.id"] = path.stem
+    _regenerate_entity_bookkeeping(structure)
+    return _build_document(
+        structure,
+        source.tree,
+        source.atom_state_ids,
+        _union_chem_comp([source]),
+        label=path.name,
+    )
+
+
 # === Coordinate assembly ===
 
 
@@ -683,13 +786,25 @@ def _assemble_structure(ground: SourceModel, changed: SourceModel, *, name: str)
         model.add_chain(chain)
     structure.add_model(model)
 
-    # Regenerate the entity bookkeeping from the coordinates. This is the call
-    # that makes the merged file self-consistent instead of carrying one input's
-    # label_* meanings over the other input's atoms.
+    _regenerate_entity_bookkeeping(structure)
+    return structure, atom_state_ids
+
+
+def _regenerate_entity_bookkeeping(structure: gemmi.Structure) -> None:
+    """Derive ``_entity``, ``_struct_asym`` and the ``label_*`` columns from coordinates.
+
+    This is what makes an output file self-consistent instead of carrying an
+    input's ``label_*`` meanings over atoms they were never about — the merged
+    file's whole reason for assembling at the Structure level, and equally what an
+    intermediate needs once its residue numbering has moved under its input's own
+    ``_entity`` table.
+
+    Args:
+        structure: The structure to regenerate, mutated in place.
+    """
     structure.setup_entities()
     structure.assign_label_seq_id(True)
     _number_entities(structure)
-    return structure, atom_state_ids
 
 
 def _number_entities(structure: gemmi.Structure) -> None:
@@ -765,15 +880,19 @@ def _build_document(
     tree: HierarchyTree,
     atom_state_ids: list[str],
     chem_comp: dict[str, list[str]],
+    *,
+    label: str,
 ) -> gemmi.cif.Document:
-    """Turn the assembled structure and tree into the document to write.
+    """Turn a structure and a tree into the document to write.
 
     Args:
-        structure: The assembled coordinates.
-        tree: The merged hierarchy tree.
+        structure: The coordinates — the merged pair, or one input on its own.
+        tree: The hierarchy tree to write into the block.
         atom_state_ids: One state id per atom, in Structure walk order.
-        chem_comp: The unioned ``_chem_comp`` category; when empty, the table
+        chem_comp: The ``_chem_comp`` category to write; when empty, the table
             gemmi derived from the coordinates is kept instead.
+        label: What to call this file if its atom order has to be complained
+            about.
 
     Returns:
         The document to write.
@@ -793,7 +912,7 @@ def _build_document(
     if chem_comp:
         block.set_mmcif_category("_chem_comp.", chem_comp, raw=True)
 
-    _check_walk_matches_rows("the merged file", block, structure)
+    _check_walk_matches_rows(label, block, structure)
     _write_two_decimal_occupancies(block)
     write_hierarchy(block, tree, overwrite=True)
     write_atom_site_heterogeneity_ids(block, atom_state_ids, overwrite=True)

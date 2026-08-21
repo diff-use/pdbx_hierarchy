@@ -8,7 +8,7 @@ within-one-file commands do.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, NamedTuple
 
 import typer
 
@@ -79,27 +79,95 @@ def _render_shift(shift: numbering.NonPolymerShift) -> str:
     )
 
 
-def _resolve_merged_path(ground: Path, changed: Path, output: Path | None, *, yes: bool) -> Path:
-    """Decide where the merged file goes.
+class _OutputPlan(NamedTuple):
+    """Where a run's files go.
 
-    The default name puts the changed state first, because that is the state a
-    reader cares most about; ground comes first everywhere *inside* the file,
-    where it is the interpretive baseline.
+    Attributes:
+        merged: The merged file's path.
+        intermediate_dir: Where the intermediates go, or None when none were
+            asked for. Held as the directory rather than the two paths because
+            that is what the merge takes, and naming them is
+            :func:`merge.intermediate_path`'s job in both places.
+    """
+
+    merged: Path
+    intermediate_dir: Path | None
+
+
+def _plan_outputs(
+    ground: Path,
+    changed: Path,
+    output: Path | None,
+    *,
+    keep_intermediates: bool,
+    yes: bool,
+) -> _OutputPlan:
+    """Decide where every file this run writes goes, and confirm the lot at once.
+
+    The merged file's default name puts the changed state first, because that is
+    the state a reader cares most about; ground comes first everywhere *inside*
+    the file, where it is the interpretive baseline. The intermediates are named
+    after their own input and always land in the working directory, so a run
+    started here leaves its side files here even when ``-o`` sends the merged file
+    elsewhere.
 
     Args:
         ground: The ground input path.
         changed: The changed input path.
-        output: The requested output path, or None for the default name in the
-            working directory.
+        output: The requested merged-file path, or None for the default name in
+            the working directory.
+        keep_intermediates: Whether the run will also write the two intermediates.
         yes: If True, skip the overwrite confirmation.
 
     Returns:
-        The path to write the merged file to.
+        The plan for this run's output files.
+
+    Raises:
+        typer.BadParameter: If two of the run's outputs resolve to one path,
+            which would silently overwrite one model with another.
+        typer.Abort: If a file would be overwritten and the user declines.
     """
-    target = output if output is not None else Path.cwd() / f"{changed.stem}_{ground.stem}_hierarchy.cif"
-    if target.exists() and not yes:
-        typer.confirm(f"{target} already exists. Overwrite?", abort=True)
-    return target
+    working = Path.cwd()
+    merged = output if output is not None else working / f"{changed.stem}_{ground.stem}_hierarchy.cif"
+    intermediate_dir = working if keep_intermediates else None
+
+    targets = [merged]
+    if intermediate_dir is not None:
+        targets.extend(merge.intermediate_path(source, intermediate_dir) for source in (ground, changed))
+
+    resolved = [target.resolve() for target in targets]
+    for target, resolved_target in zip(targets, resolved, strict=True):
+        if resolved.count(resolved_target) > 1:
+            raise typer.BadParameter(f"more than one output file would be written to {target}")
+
+    _confirm_overwrite(targets, yes=yes)
+    return _OutputPlan(merged=merged, intermediate_dir=intermediate_dir)
+
+
+def _confirm_overwrite(targets: list[Path], *, yes: bool) -> None:
+    """Ask once about every output file that already exists.
+
+    One confirmation rather than one per file: a run writing three files should
+    not stop three times, and answering for some of them but not others would
+    leave the outputs inconsistent with each other anyway.
+
+    Args:
+        targets: Every file the run will write.
+        yes: If True, skip the confirmation entirely.
+
+    Raises:
+        typer.Abort: If the user declines.
+    """
+    if yes:
+        return
+    existing = [target for target in targets if target.exists()]
+    if not existing:
+        return
+    if len(existing) == 1:
+        typer.confirm(f"{existing[0]} already exists. Overwrite?", abort=True)
+        return
+    listing = "\n".join(f"  {target}" for target in existing)
+    typer.confirm(f"{len(existing)} output files already exist:\n{listing}\nOverwrite all?", abort=True)
 
 
 def merge_states(
@@ -128,10 +196,14 @@ def merge_states(
     both inputs assigned to a state under the appropriate branch.
     """
     with error_handler():
-        out = _resolve_merged_path(ground, changed, output, yes=yes)
-        if keep_intermediates:
-            warn("--keep-intermediates is not implemented yet; only the merged file will be written")
-        report = merge.merge_states(ground_path=ground, changed_path=changed, occ=occ, output_path=out)
+        plan = _plan_outputs(ground, changed, output, keep_intermediates=keep_intermediates, yes=yes)
+        report = merge.merge_states(
+            ground_path=ground,
+            changed_path=changed,
+            occ=occ,
+            output_path=plan.merged,
+            intermediate_dir=plan.intermediate_dir,
+        )
 
         for note in report.notes:
             warn(note)
@@ -144,4 +216,6 @@ def merge_states(
         for altloc_map in report.altloc_maps:
             typer.echo(f"Altloc labels in {altloc_map.source_name}: {_render_map(altloc_map.mapping)}")
         typer.echo(_render_shift(report.nonpolymer_shift))
-        typer.echo(f"Wrote {out}")
+        typer.echo(f"Wrote {plan.merged}")
+        for path in report.intermediate_paths:
+            typer.echo(f"Wrote {path} (standalone, unscaled occupancies)")
