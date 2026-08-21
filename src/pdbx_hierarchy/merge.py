@@ -36,6 +36,7 @@ from pdbx_hierarchy.assignment import assign_from_alt_ids
 from pdbx_hierarchy.exceptions import HierarchyNotFoundError, PdbxParseError, PdbxValidationError
 from pdbx_hierarchy.io.reader import (
     count_atom_site_rows,
+    count_coexistence_rules,
     has_hierarchy,
     read_atom_site_heterogeneity_ids,
     read_hierarchy,
@@ -78,6 +79,25 @@ OUTPUT_CATEGORIES = (
 #: same order as the rows of the corresponding _atom_site loop.
 _ORDER_CHECK_COLUMNS = ("label_comp_id", "label_atom_id", "label_alt_id")
 
+#: The gemmi UnitCell attributes holding the three cell lengths, and the three
+#: angles, in the order both are conventionally written.
+_CELL_LENGTHS = ("a", "b", "c")
+_CELL_ANGLES = ("alpha", "beta", "gamma")
+
+#: How far two inputs' cell lengths may differ, in ångström, before the pair looks
+#: mispaired rather than independently refined.
+_CELL_LENGTH_TOLERANCE = 0.1
+
+#: The same, for cell angles, in degrees.
+_CELL_ANGLE_TOLERANCE = 0.1
+
+#: Appended to the cell/symmetry warning. Two models of one crystal that disagree
+#: about its cell are almost certainly not two models of one crystal, which is a
+#: stronger statement than a warning makes — but erroring would also stop a run
+#: over a legitimately reprocessed pair, and this prototype is not the place to
+#: decide which of those matters more.
+_CELL_SEVERITY_NOTE = "a warning in this prototype; an integrated version should reconsider making this an error"
+
 
 class AltlocMap(NamedTuple):
     """One input's altloc relabelling, for the caller to print in full.
@@ -118,6 +138,8 @@ class SourceModel:
         atom_state_ids: One state id per atom, in Structure walk order.
         reused_hierarchy: True when the tree came from the file rather than
             inference.
+        coexistence_rule_count: How many coexistence rules the input carried. The
+            merge writes none, so this is only ever reported, never used.
     """
 
     path: Path
@@ -126,6 +148,7 @@ class SourceModel:
     tree: HierarchyTree
     atom_state_ids: list[str]
     reused_hierarchy: bool
+    coexistence_rule_count: int
 
 
 @dataclass
@@ -193,6 +216,9 @@ def merge_states(
     """
     ground = load_source(ground_path)
     changed = load_source(changed_path)
+    # Gathered before any stage rewrites the models, so what is reported is what
+    # the user handed over.
+    input_notes = _describe_inputs(ground, changed)
 
     _rename_root(ground, GROUND_STATE_ID, GROUND_STATE_NAME)
     _rename_root(changed, CHANGED_STATE_ID, CHANGED_STATE_NAME)
@@ -215,12 +241,6 @@ def merge_states(
     for path, intermediate_doc in intermediates:
         write_mmcif(intermediate_doc, path)
 
-    notes = [
-        f"{source.path.name}: reused the hierarchy already in the file"
-        for source in (ground, changed)
-        if source.reused_hierarchy
-    ]
-    notes.extend(occupancy_notes)
     return MergeReport(
         output_path=output_path,
         tree=tree,
@@ -228,7 +248,7 @@ def merge_states(
         nonpolymer_shift=nonpolymer_shift,
         altloc_maps=altloc_maps,
         intermediate_paths=[path for path, _ in intermediates],
-        notes=notes,
+        notes=[*input_notes, *occupancy_notes],
     )
 
 
@@ -310,6 +330,7 @@ def load_source(path: Path) -> SourceModel:
         tree=tree,
         atom_state_ids=atom_state_ids,
         reused_hierarchy=reused,
+        coexistence_rule_count=count_coexistence_rules(block),
     )
 
 
@@ -367,6 +388,95 @@ def _walk_value(column: str, residue: gemmi.Residue, atom: gemmi.Atom) -> str:
     if column == "label_atom_id":
         return atom.name
     return altloc.read_altloc(atom)
+
+
+# === Reporting on the inputs ===
+
+
+def _describe_inputs(ground: SourceModel, changed: SourceModel) -> list[str]:
+    """Return what is worth telling the user about the inputs as they arrived.
+
+    Everything here is a warning rather than an error, and none of it changes what
+    the merge does — which is why it is gathered in one place instead of being
+    scattered through the stages that happen to touch the same data. The
+    cell/symmetry check comes first: it is the one that says the whole run may be
+    built on the wrong premise.
+
+    Args:
+        ground: The ground model, freshly loaded.
+        changed: The changed model, likewise.
+
+    Returns:
+        Notes for the caller to report, most consequential first.
+    """
+    notes = _cell_and_symmetry_notes(ground, changed)
+    for source in (ground, changed):
+        if source.reused_hierarchy:
+            notes.append(f"{source.path.name}: reused the hierarchy already in the file")
+        if source.coexistence_rule_count:
+            notes.append(
+                f"{source.path.name}: dropped {source.coexistence_rule_count} coexistence rule(s); "
+                f"the merged file carries no _pdbx_state_coexistence table"
+            )
+    return notes
+
+
+def _cell_and_symmetry_notes(ground: SourceModel, changed: SourceModel) -> list[str]:
+    """Report a disagreement about the crystal the two inputs claim to describe.
+
+    Two models of one crystal have one cell and one space group between them, so a
+    disagreement is evidence that the wrong two files were paired — the merge
+    cannot tell that from a deliberate pairing of reprocessed data, so it says so
+    and continues. The space group is compared as an exact string because it is
+    written as one; the cell numerically, since two independent refinements of the
+    same crystal legitimately differ in the last decimal place.
+
+    Args:
+        ground: The ground model, whose cell and space group the merged file takes.
+        changed: The changed model.
+
+    Returns:
+        At most one note, naming both files and every field that disagreed.
+    """
+    disagreements: list[str] = []
+    if ground.structure.spacegroup_hm != changed.structure.spacegroup_hm:
+        disagreements.append(f"space group {ground.structure.spacegroup_hm!r} vs {changed.structure.spacegroup_hm!r}")
+    if not _cells_agree(ground.structure.cell, changed.structure.cell):
+        left, right = _render_cell(ground.structure.cell), _render_cell(changed.structure.cell)
+        disagreements.append(f"unit cell {left} vs {right}")
+
+    if not disagreements:
+        return []
+    return [
+        f"{ground.path.name} and {changed.path.name} disagree about the crystal: "
+        f"{'; '.join(disagreements)}. The merged file takes {ground.path.name}'s "
+        f"({_CELL_SEVERITY_NOTE})"
+    ]
+
+
+def _cells_agree(left: gemmi.UnitCell, right: gemmi.UnitCell) -> bool:
+    """Return True if two unit cells match within the per-field tolerances.
+
+    Args:
+        left: One input's cell.
+        right: The other's.
+
+    Returns:
+        True if every length is within ``_CELL_LENGTH_TOLERANCE`` and every angle
+        within ``_CELL_ANGLE_TOLERANCE``.
+    """
+    return all(
+        abs(getattr(left, field) - getattr(right, field)) <= tolerance
+        for fields, tolerance in ((_CELL_LENGTHS, _CELL_LENGTH_TOLERANCE), (_CELL_ANGLES, _CELL_ANGLE_TOLERANCE))
+        for field in fields
+    )
+
+
+def _render_cell(cell: gemmi.UnitCell) -> str:
+    """Render a unit cell as the six parameters, lengths then angles."""
+    lengths = " ".join(f"{getattr(cell, field):.3f}" for field in _CELL_LENGTHS)
+    angles = " ".join(f"{getattr(cell, field):.2f}" for field in _CELL_ANGLES)
+    return f"{lengths} {angles}"
 
 
 # === Tree surgery ===

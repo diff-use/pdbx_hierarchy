@@ -153,6 +153,27 @@ def read_coexistence(source: Path | gemmi.cif.Block) -> CoexistenceTable | None:
     return CoexistenceTable.from_mmcif_rows(rows)
 
 
+def count_coexistence_rules(source: Path | gemmi.cif.Block) -> int:
+    """Return the number of rows in the _pdbx_state_coexistence loop, or 0 if there is none.
+
+    Counted from the id column alone rather than parsed, so a caller that only
+    needs to say how many rules a file holds — to report dropping them, say —
+    does not have to be able to interpret them. Read through ``find`` rather than
+    ``find_loop`` because a single-rule table is conventionally written as plain
+    ``_tag value`` pairs rather than a one-row ``loop_``, and ``find_loop`` sees
+    nothing there: counting zero rules in a file that has one is exactly the
+    silent drop a caller asks this to prevent.
+
+    Args:
+        source: Path to a mmCIF file, or an already-loaded Block.
+
+    Returns:
+        The rule count, or 0 when the file has no coexistence table.
+    """
+    block = _resolve_block(source)
+    return len(block.find("_pdbx_state_coexistence.", ["id"]))
+
+
 def read_atom_site_heterogeneity_ids(source: Path | gemmi.cif.Block) -> list[str]:
     """Return the _atom_site.pdbx_heterogeneity_id column as a list.
 

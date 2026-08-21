@@ -179,6 +179,50 @@ def _add_altloc_atoms(path: Path, labels: str) -> None:
     structure.make_mmcif_document().write_file(str(path))
 
 
+def _substitute(path: Path, old: str, new: str) -> None:
+    """Replace every occurrence of a string in an input file, insisting it was there.
+
+    Used to perturb a cell or symmetry value in a copied fixture. The
+    assertion is what keeps a test honest if the fixture's wording ever changes:
+    without it, a stale pattern would silently perturb nothing and the test would
+    pass by asserting a warning is absent from an unmodified pair.
+
+    Args:
+        path: The copied fixture to edit.
+        old: The exact text to replace.
+        new: What to put in its place.
+    """
+    text = path.read_text()
+    assert old in text, f"{path.name} does not contain {old!r}"
+    path.write_text(text.replace(old, new))
+
+
+def _with_coexistence(runner: CliRunner, app: typer.Typer, source: Path, out: Path) -> Path:
+    """Return a copy of an input carrying an inferred hierarchy and one coexistence rule.
+
+    Built through the CLI rather than hand-written so the rule is exactly what
+    this toolbox writes — the only way an input reaching ``merge-states`` comes to
+    hold coexistence rules at all.
+
+    Args:
+        runner: The CLI runner.
+        app: The CLI app.
+        source: The input to start from.
+        out: Where to write the result.
+
+    Returns:
+        The path written.
+    """
+    inferred = out.with_name(f"{out.stem}_inferred.cif")
+    assert runner.invoke(app, ["infer", str(source), "-o", str(inferred), "-y"]).exit_code == 0
+    result = runner.invoke(
+        app,
+        ["coexist", "add", str(inferred), "--rule", "OR", "--source", "Base", "--related", "A", "-o", str(out), "-y"],
+    )
+    assert result.exit_code == 0, result.output + result.stderr
+    return out
+
+
 def _position_sums(path: Path) -> dict[tuple[str, str, str], int]:
     """Sum the written occupancies, in hundredths, over each atom position.
 
@@ -415,6 +459,125 @@ class TestGuards:
         )
         assert result.exit_code == 1
         assert "pdbx_heterogeneity_id" in (result.output + result.stderr)
+
+    def test_a_unit_cell_mismatch_is_a_warning(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        _, changed = pair
+        _substitute(changed, "_cell.length_a 30.000", "_cell.length_a 35.000")
+        out = tmp_path / "merged.cif"
+        code, output = _merge(runner, app, pair, out)
+        assert code == 0, output
+        assert "unit cell" in output
+        assert "merge_ground.cif" in output
+        assert "merge_changed.cif" in output
+        # A warning, not an error: the file is still written.
+        assert out.exists()
+
+    def test_a_cell_angle_mismatch_is_a_warning(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        _, changed = pair
+        _substitute(changed, "_cell.angle_beta 90.00", "_cell.angle_beta 95.00")
+        code, output = _merge(runner, app, pair, tmp_path / "merged.cif")
+        assert code == 0, output
+        assert "unit cell" in output
+
+    def test_the_cell_warning_says_it_should_be_reconsidered_as_an_error(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        _, changed = pair
+        _substitute(changed, "_cell.length_a 30.000", "_cell.length_a 35.000")
+        code, output = _merge(runner, app, pair, tmp_path / "merged.cif")
+        assert code == 0, output
+        assert "reconsider making this an error" in output
+
+    def test_a_cell_difference_within_tolerance_is_not_warned(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        _, changed = pair
+        # Two refinements of one crystal disagree in the last decimal place; that
+        # is not a mispaired file.
+        _substitute(changed, "_cell.length_a 30.000", "_cell.length_a 30.050")
+        _substitute(changed, "_cell.angle_beta 90.00", "_cell.angle_beta 90.05")
+        code, output = _merge(runner, app, pair, tmp_path / "merged.cif")
+        assert code == 0, output
+        assert "unit cell" not in output
+
+    def test_a_space_group_mismatch_is_a_warning(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        _, changed = pair
+        _substitute(changed, "_symmetry.space_group_name_H-M 'P 1'", "_symmetry.space_group_name_H-M 'P 21 21 21'")
+        out = tmp_path / "merged.cif"
+        code, output = _merge(runner, app, pair, out)
+        assert code == 0, output
+        assert "space group" in output
+        assert out.exists()
+
+    def test_a_matching_pair_warns_about_neither(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        code, output = _merge(runner, app, pair, tmp_path / "merged.cif")
+        assert code == 0, output
+        assert "unit cell" not in output
+        assert "space group" not in output
+
+    def test_reusing_an_existing_hierarchy_is_a_warning(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        ground, changed = pair
+        inferred = tmp_path / "ground_inferred.cif"
+        assert runner.invoke(app, ["infer", str(ground), "-o", str(inferred), "-y"]).exit_code == 0
+        code, output = _merge(runner, app, (inferred, changed), tmp_path / "merged.cif")
+        assert code == 0, output
+        assert "reused the hierarchy" in output
+        assert "ground_inferred.cif" in output
+        # Only the ground input had one, so the changed input is not warned about.
+        assert "merge_changed.cif: reused" not in output
+
+    def test_coexistence_rules_are_dropped_with_a_warning(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        ground, changed = pair
+        with_rules = _with_coexistence(runner, app, ground, tmp_path / "ground_rules.cif")
+        out = tmp_path / "merged.cif"
+        code, output = _merge(runner, app, (with_rules, changed), out)
+        assert code == 0, output
+        assert "1 coexistence rule" in output
+        assert "ground_rules.cif" in output
+        assert "_pdbx_state_coexistence." not in _categories(out)
+
+    def test_both_inputs_carrying_rules_are_each_named(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        ground, changed = pair
+        ground_rules = _with_coexistence(runner, app, ground, tmp_path / "ground_rules.cif")
+        changed_rules = _with_coexistence(runner, app, changed, tmp_path / "changed_rules.cif")
+        code, output = _merge(runner, app, (ground_rules, changed_rules), tmp_path / "merged.cif")
+        assert code == 0, output
+        assert "ground_rules.cif: dropped 1 coexistence rule" in output
+        assert "changed_rules.cif: dropped 1 coexistence rule" in output
+
+    def test_a_rule_written_as_pairs_rather_than_a_loop_is_still_reported(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        ground, changed = pair
+        # A single row is conventionally written as _tag value pairs, which is what
+        # a hand-written or third-party file will hold. Counting only loops would
+        # drop this rule in silence — the one outcome the warning exists to avoid.
+        as_pairs = tmp_path / "ground_pairs.cif"
+        as_pairs.write_text(
+            ground.read_text()
+            + "_pdbx_state_coexistence.id 1\n"
+            + "_pdbx_state_coexistence.rule NOT\n"
+            + "_pdbx_state_coexistence.heterogeneity_id A\n"
+            + "_pdbx_state_coexistence.heterogeneity_ids B\n"
+            + "_pdbx_state_coexistence.description ?\n"
+        )
+        code, output = _merge(runner, app, (as_pairs, changed), tmp_path / "merged.cif")
+        assert code == 0, output
+        assert "ground_pairs.cif: dropped 1 coexistence rule" in output
 
 
 class TestAtoms:

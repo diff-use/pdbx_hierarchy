@@ -8,6 +8,7 @@ import pytest
 from pdbx_hierarchy.exceptions import HierarchyNotFoundError, PdbxParseError
 from pdbx_hierarchy.io.reader import (
     _resolve_block,
+    count_coexistence_rules,
     has_hierarchy,
     read_atom_site_heterogeneity_ids,
     read_coexistence,
@@ -144,6 +145,28 @@ class TestReadCoexistence:
         table = read_coexistence(full_hierarchy_cif)
         assert table is not None
         assert table.rules[0].heterogeneity_ids == ["A"]
+
+
+class TestCountCoexistenceRules:
+    def test_a_loop_is_counted(self, full_hierarchy_cif: Path) -> None:
+        assert count_coexistence_rules(full_hierarchy_cif) == 1
+
+    def test_zero_when_absent(self, hierarchy_only_cif: Path) -> None:
+        assert count_coexistence_rules(hierarchy_only_cif) == 0
+
+    def test_a_single_rule_written_as_pairs_is_counted(self) -> None:
+        # One row is conventionally written as _tag value pairs rather than a
+        # one-row loop_, and a count that missed those would report a file's only
+        # rule as no rules at all.
+        block = gemmi.cif.read_string(
+            "data_X\n"
+            "_pdbx_state_coexistence.id 1\n"
+            "_pdbx_state_coexistence.rule NOT\n"
+            "_pdbx_state_coexistence.heterogeneity_id A\n"
+            "_pdbx_state_coexistence.heterogeneity_ids B\n"
+            "_pdbx_state_coexistence.description ?\n"
+        ).sole_block()
+        assert count_coexistence_rules(block) == 1
 
 
 class TestReadAtomSiteHeterogeneityIds:

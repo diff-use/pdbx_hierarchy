@@ -51,6 +51,7 @@ def _source(name: str, cif: str, tmp_path: Path) -> SourceModel:
         tree=HierarchyTree(states=[HierarchyState(id="Base", name="base_state", parent=None)]),
         atom_state_ids=[],
         reused_hierarchy=False,
+        coexistence_rule_count=0,
     )
 
 
