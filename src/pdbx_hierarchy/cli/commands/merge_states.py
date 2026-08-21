@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Annotated
 
 import typer
 
-from pdbx_hierarchy import merge
+from pdbx_hierarchy import merge, numbering
 from pdbx_hierarchy.cli.commands._utils import error_handler, render_tree, warn
 
 if TYPE_CHECKING:
@@ -54,6 +54,29 @@ def _render_map(mapping: Mapping[str, str]) -> str:
         The remap as ``old->new`` pairs, comma-separated.
     """
     return ", ".join(f"{old}->{new}" for old, new in sorted(mapping.items()))
+
+
+def _render_shift(shift: numbering.NonPolymerShift) -> str:
+    """Render the non-polymer renumbering as one traceable line.
+
+    The offset is printed even when it is zero, and the ranges alongside it: the
+    merged file has nowhere to record the number a non-polymer used to carry, so
+    this line is the only route from a merged water or ligand back to its
+    deposited identity, and "nothing moved" is as much a part of that as a shift
+    is.
+
+    Args:
+        shift: The shift the merge applied.
+
+    Returns:
+        The line to print.
+    """
+    if shift.residue_count == 0:
+        return "Changed non-polymer residues: none to renumber"
+    return (
+        f"Changed non-polymer auth_seq_id: {shift.old_min}-{shift.old_max} -> "
+        f"{shift.new_min}-{shift.new_max} (offset +{shift.offset}, {shift.residue_count} residue(s))"
+    )
 
 
 def _resolve_merged_path(ground: Path, changed: Path, output: Path | None, *, yes: bool) -> Path:
@@ -120,4 +143,5 @@ def merge_states(
             typer.echo(f"Changed state ids: {_render_map(report.changed_id_map)}")
         for altloc_map in report.altloc_maps:
             typer.echo(f"Altloc labels in {altloc_map.source_name}: {_render_map(altloc_map.mapping)}")
+        typer.echo(_render_shift(report.nonpolymer_shift))
         typer.echo(f"Wrote {out}")

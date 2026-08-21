@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING, NamedTuple, cast
 
 import gemmi
 
-from pdbx_hierarchy import altloc, occupancy
+from pdbx_hierarchy import altloc, numbering, occupancy
 from pdbx_hierarchy.assignment import assign_from_alt_ids
 from pdbx_hierarchy.exceptions import HierarchyNotFoundError, PdbxParseError, PdbxValidationError
 from pdbx_hierarchy.io.reader import (
@@ -94,9 +94,11 @@ class AltlocMap(NamedTuple):
 class _ResidueKey(NamedTuple):
     """What makes a residue distinct when both inputs' residues are pooled.
 
-    Component id is part of the key on purpose: a ligand in one input and a water
-    in the other, sharing a residue number, must stay two residues rather than
-    fusing into one residue with two "conformations".
+    Component id is part of the key on purpose. Renumbering already keeps a
+    ligand in one input and a water in the other off each other's numbers, so
+    what this adds is the case renumbering deliberately leaves alone: two polymer
+    residues at one authored position naming different components — an alternate
+    residue identity — stay two residues rather than fusing into one.
     """
 
     seq_num: int
@@ -136,12 +138,15 @@ class MergeReport:
         changed_id_map: Old -> new state id for every non-root state of the
             changed input's tree.
         altloc_maps: Each input's altloc relabelling, ground first.
+        nonpolymer_shift: The offset applied to the changed input's non-polymer
+            residue numbers.
         notes: Human-readable observations worth printing.
     """
 
     output_path: Path
     tree: HierarchyTree
     changed_id_map: dict[str, str]
+    nonpolymer_shift: numbering.NonPolymerShift
     altloc_maps: list[AltlocMap] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
@@ -172,10 +177,11 @@ def merge_states(
         PdbxParseError: If an input is malformed or contains no atoms.
         PdbxValidationError: If either input has an atom position whose
             occupancies already sum above ``1.00``, if the two inputs need more
-            altloc labels between them than the alphabet has, if the two inputs
-            define the same chemical component with differing formulae, or if the
-            assembled file's atom order cannot be reconciled with the hierarchy
-            assignments.
+            altloc labels between them than the alphabet has, if a non-polymer
+            residue still shares an authored position with the other input's
+            residue after renumbering, if the two inputs define the same chemical
+            component with differing formulae, or if the assembled file's atom
+            order cannot be reconciled with the hierarchy assignments.
     """
     ground = load_source(ground_path)
     changed = load_source(changed_path)
@@ -184,6 +190,7 @@ def merge_states(
     _rename_root(changed, CHANGED_STATE_ID, CHANGED_STATE_NAME)
     changed_id_map = _deconflict_state_ids(ground.tree, changed)
     altloc_maps = _partition_altlocs(ground, changed)
+    nonpolymer_shift = _renumber_non_polymers(ground, changed)
 
     occupancy_notes = _scale_occupancies(ground, changed, occ)
     tree = _build_merged_tree(ground, changed, occ)
@@ -203,6 +210,7 @@ def merge_states(
         output_path=output_path,
         tree=tree,
         changed_id_map=changed_id_map,
+        nonpolymer_shift=nonpolymer_shift,
         altloc_maps=altloc_maps,
         notes=notes,
     )
@@ -253,6 +261,15 @@ def load_source(path: Path) -> SourceModel:
         reused = False
 
     structure = gemmi.make_structure_from_block(block)
+    # Renumbering asks each residue whether it is a polymer residue, which is a
+    # question only entity_type answers correctly — see the numbering module. An
+    # input with an _entity family has it already; one without, such as a
+    # hand-written fixture, gets it inferred from the coordinates here. Nothing
+    # is overwritten, so a file's own declaration always wins, and no atom moves:
+    # this fills a field in and leaves the walk order the assignments are indexed
+    # by exactly as it was.
+    structure.add_entity_types()
+
     # Only the first model is assembled, so a multi-model input would lose atoms.
     if len(structure) > 1:
         raise PdbxValidationError(
@@ -286,6 +303,13 @@ def _iter_atoms(structure: gemmi.Structure) -> Iterator[tuple[gemmi.Chain, gemmi
         for residue in chain:
             for atom in residue:
                 yield chain, residue, atom
+
+
+def _iter_residues(structure: gemmi.Structure) -> Iterator[tuple[gemmi.Chain, gemmi.Residue]]:
+    """Walk the first model's residues, each with the chain it sits in."""
+    for chain in structure[0]:
+        for residue in chain:
+            yield chain, residue
 
 
 def _check_walk_matches_rows(label: str, block: gemmi.cif.Block, structure: gemmi.Structure) -> None:
@@ -523,6 +547,37 @@ def _partition_altlocs(ground: SourceModel, changed: SourceModel) -> list[Altloc
     return [AltlocMap(source.path.name, mapping) for source, mapping in zip(sources, mappings, strict=True)]
 
 
+# === Residue numbering ===
+
+
+def _renumber_non_polymers(ground: SourceModel, changed: SourceModel) -> numbering.NonPolymerShift:
+    """Shift the changed input's non-polymer residues above the ground input's.
+
+    Sits before assembly because assembly is what pools the two inputs' atoms
+    into shared residues, and a residue number is the larger half of the key it
+    pools them by. Afterwards would be too late: the fusing would already have
+    happened, and the two molecules' atoms would be indistinguishable.
+
+    Args:
+        ground: The ground model, whose numbering is left exactly as it was.
+        changed: The changed model, whose non-polymer residues are renumbered.
+
+    Returns:
+        The shift applied, for the caller to print — the only trace from a merged
+        non-polymer back to its deposited number.
+
+    Raises:
+        PdbxValidationError: If a non-polymer residue still shares an authored
+            position with the other input's residue once the shift is applied.
+    """
+    return numbering.separate_non_polymers(
+        list(_iter_residues(ground.structure)),
+        list(_iter_residues(changed.structure)),
+        ground_label=ground.path.name,
+        changed_label=changed.path.name,
+    )
+
+
 # === Occupancy ===
 
 
@@ -572,7 +627,8 @@ def _assemble_structure(ground: SourceModel, changed: SourceModel, *, name: str)
     between two models of the same crystal even where label identity does not.
     Residues are matched by number, insertion code, and component id, so a
     polymer residue present in both inputs becomes one residue carrying both
-    inputs' atoms, while a ligand and a water sharing a number stay separate.
+    inputs' atoms. Non-polymers reach here already renumbered clear of each
+    other, so nothing they hold can be pooled across the two inputs.
 
     Args:
         ground: The ground model.

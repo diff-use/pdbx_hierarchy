@@ -33,6 +33,7 @@ src/pdbx_hierarchy/
 ├── merge.py              # Merge a ground and a changed model into one file
 ├── occupancy.py          # Integer-hundredths occupancy fold for the merge
 ├── altloc.py             # Partition the label_alt_id alphabet between the merge's inputs
+├── numbering.py          # Shift the changed model's non-polymer residues clear of the ground's
 ├── models/
 │   ├── hierarchy.py      # HierarchyState, HierarchyTree
 │   ├── coexistence.py    # StateCoexistence, CoexistenceTable

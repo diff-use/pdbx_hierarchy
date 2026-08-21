@@ -89,6 +89,24 @@ def _labels_by_branch(path: Path) -> tuple[set[str], set[str]]:
     return ground, changed
 
 
+def _residues_by_branch(path: Path) -> tuple[set[tuple[str, int, str]], set[tuple[str, int, str]]]:
+    """Return the authored residues of the ground branch and of the changed branch.
+
+    Each residue is ``(auth_asym_id, auth_seq_id, label_comp_id)``, read back from
+    the merged file's rows so that what is asserted is what a reader sees.
+    """
+    tree = read_hierarchy(path)
+    ground_ids = {"Ground"} | {state.id for state in tree.get_descendants("Ground")}
+    ground: set[tuple[str, int, str]] = set()
+    changed: set[tuple[str, int, str]] = set()
+    columns = ("auth_asym_id", "auth_seq_id", "label_comp_id")
+    chains, numbers, comps = (_column(path, f"_atom_site.{tag}") for tag in columns)
+    rows = zip(chains, numbers, comps, read_atom_site_heterogeneity_ids(path), strict=True)
+    for chain, number, comp, state in rows:
+        (ground if state in ground_ids else changed).add((chain, int(number), comp))
+    return ground, changed
+
+
 def _add_altloc_atoms(path: Path, labels: str) -> None:
     """Rewrite an input so its first residue carries one extra atom per label.
 
@@ -491,6 +509,87 @@ class TestAltloc:
         assert "62" in output
 
 
+class TestNonPolymerNumbering:
+    """Non-polymer renumbering: changed's non-polymers clear of ground's residues.
+
+    On the fixture pair the offset comes out as ``+1``: ground's highest number is
+    its EDO at 101, and changed's only non-polymer is its W2S at 101, so the W2S
+    lands at 102 — the smallest shift that clears the ceiling. The unit tests in
+    ``test_numbering.py`` cover what the ceiling counts and what happens when a
+    collision survives, neither of which this fixture can show.
+    """
+
+    def test_changed_non_polymers_are_shifted_above_grounds_highest(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        out = tmp_path / "merged.cif"
+        assert _merge(runner, app, pair, out)[0] == 0
+        ground, changed = _residues_by_branch(out)
+        # The colliding pair the fixture exists for: EDO and W2S both at 101 in
+        # their inputs, no longer one residue with two "conformations".
+        assert ("A", 101, "EDO") in ground
+        assert ("A", 102, "W2S") in changed
+        highest_ground = max(number for _, number, _ in ground)
+        assert all(number > highest_ground for chain, number, comp in changed if comp == "W2S")
+
+    def test_polymer_numbering_is_unchanged_in_both_inputs(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        out = tmp_path / "merged.cif"
+        assert _merge(runner, app, pair, out)[0] == 0
+        ground, changed = _residues_by_branch(out)
+        polymer = {("A", 1, "ALA"), ("A", 2, "SER"), ("A", 3, "GLY")}
+        # Residue 47 is the same residue in both models; that correspondence is
+        # what the hierarchy encodes, so neither input's polymer numbers move.
+        assert polymer <= ground
+        assert polymer <= changed
+
+    def test_a_shared_position_holds_one_polymer_residue_or_nothing(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        out = tmp_path / "merged.cif"
+        assert _merge(runner, app, pair, out)[0] == 0
+        ground, changed = _residues_by_branch(out)
+        ground_comps = {(chain, number): comp for chain, number, comp in ground}
+        changed_comps = {(chain, number): comp for chain, number, comp in changed}
+        shared = set(ground_comps) & set(changed_comps)
+        assert shared == {("A", 1), ("A", 2), ("A", 3)}
+        for position in shared:
+            assert ground_comps[position] == changed_comps[position]
+
+    def test_the_offset_is_printed(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        code, output = _merge(runner, app, pair, tmp_path / "merged.cif")
+        assert code == 0, output
+        # The merged file has nowhere to record a non-polymer's deposited number,
+        # so this line is the only trace back to it.
+        assert "Changed non-polymer auth_seq_id: 101-101 -> 102-102 (offset +1, 1 residue(s))" in output
+
+    def test_a_changed_input_with_no_non_polymer_says_so(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        ground, changed = pair
+        polymer_only = [line for line in changed.read_text().splitlines(keepends=True) if "W2S" not in line]
+        changed.write_text("".join(polymer_only))
+        code, output = _merge(runner, app, pair, tmp_path / "merged.cif")
+        assert code == 0, output
+        assert "Changed non-polymer residues: none to renumber" in output
+
+    def test_a_ground_non_polymer_inside_changeds_polymer_range_is_rejected(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        ground, _ = pair
+        # Only changed's numbering moves, so this collision is the one the shift
+        # cannot clear: ground's EDO sits on the number changed's SER 2 uses.
+        ground.write_text(ground.read_text().replace("30.00 101 A 1", "30.00 2 A 1"))
+        code, output = _merge(runner, app, pair, tmp_path / "merged.cif")
+        assert code == 1
+        assert "chain A residue 2" in output
+        assert "EDO" in output
+        assert "SER" in output
+
+
 class TestOccupancy:
     def test_each_branch_carries_its_share(
         self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
@@ -532,9 +631,11 @@ class TestOccupancy:
         sums = _position_sums(out)
         assert sums[("A", "1", "CA")] == 100  # polymer atom, both inputs
         assert sums[("A", "2", "CA")] == 100  # two conformers in each input
-        # comp_id is not part of the key, so the ground EDO's C1 and the changed
-        # W2S's C1 at auth_seq_id 101 are one position and share the whole.
-        assert sums[("A", "101", "C1")] == 100
+        # Only a polymer position can span both inputs: renumbering moves the
+        # changed input's non-polymers off the ground input's numbers, so the
+        # ground EDO's C1 at 101 and the changed W2S's C1 are two positions now.
+        assert sums[("A", "101", "C1")] == 40
+        assert sums[("A", "102", "C1")] == 60
 
     def test_a_position_only_one_input_models_keeps_its_partial_share(
         self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
@@ -543,7 +644,7 @@ class TestOccupancy:
         assert _merge(runner, app, pair, out)[0] == 0
         sums = _position_sums(out)
         assert sums[("A", "101", "O2")] == 40  # ground EDO only
-        assert sums[("A", "101", "N1")] == 60  # changed W2S only
+        assert sums[("A", "102", "N1")] == 60  # changed W2S only, renumbered
 
     def test_an_input_position_above_one_is_rejected(
         self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
