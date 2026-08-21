@@ -15,12 +15,12 @@ letting gemmi regenerate the entity bookkeeping from the coordinate content
 solves that, at the cost of sharing no code with the block-level commands. That
 cost is recorded deliberately; an integrated version needs it reconciled.
 
-Known gap, deliberate and awaiting a decision: the identifiers are regenerated
-correctly and then ``_entity`` / ``_struct_asym`` are dropped, because they are
-not in the minimal table set the format extension calls for. The surviving
-``label_entity_id`` and ``label_asym_id`` columns therefore carry neither input's
-meanings — the corruption above is avoided — but nothing in the file defines them
-either. See ``.scratch/merge-states/findings.md``, finding 2.
+The regenerated ``_entity`` and ``_struct_asym`` are written out with the
+coordinates, because ``_atom_site.label_entity_id`` and ``label_asym_id`` name
+them on every row. Dropping the two tables while keeping those columns is the
+other half of the same trap: not a file that mislabels its components, but a file
+that cannot say what its components are. See ``.scratch/merge-states/findings.md``,
+finding 2.
 """
 
 from __future__ import annotations
@@ -56,9 +56,23 @@ CHANGED_STATE_ID = "Changed"
 CHANGED_STATE_NAME = "changed_state"
 
 #: The only categories the merged file carries. Everything else from both inputs
-#: is dropped: experimental and refinement metadata, ``_struct_conn``, the
-#: polymer sequence tables, and the entity family that cannot be merged safely.
-OUTPUT_CATEGORIES = ("_entry.", "_cell.", "_symmetry.", "_chem_comp.", "_atom_site.")
+#: is dropped: experimental and refinement metadata, ``_struct_conn``, and the
+#: polymer sequence tables.
+#:
+#: ``_entity`` and ``_struct_asym`` are here because ``_atom_site`` points at
+#: them: every row carries a ``label_entity_id`` and a ``label_asym_id``, and
+#: without the two tables those columns would name nothing. They are safe to
+#: write only because they are regenerated from the merged coordinates rather
+#: than copied from an input — see the module docstring.
+OUTPUT_CATEGORIES = (
+    "_entry.",
+    "_cell.",
+    "_symmetry.",
+    "_chem_comp.",
+    "_entity.",
+    "_struct_asym.",
+    "_atom_site.",
+)
 
 #: Columns compared to confirm that a walk over a Structure visits atoms in the
 #: same order as the rows of the corresponding _atom_site loop.

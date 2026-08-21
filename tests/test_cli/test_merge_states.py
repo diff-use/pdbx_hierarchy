@@ -25,6 +25,8 @@ ALLOWED_CATEGORIES = {
     "_cell.",
     "_symmetry.",
     "_chem_comp.",
+    "_entity.",
+    "_struct_asym.",
     "_atom_site.",
     "_pdbx_heterogeneity_hierarchy.",
 }
@@ -373,6 +375,32 @@ class TestTableSet:
         # neither input's labels: one entity per distinct component, numbered.
         assert sorted(set(_column(out, "_atom_site.label_entity_id"))) == ["1", "2", "3"]
         assert len(set(_column(out, "_atom_site.label_asym_id"))) == 3
+
+    def test_no_atom_references_an_undefined_entity_or_chain(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        out = tmp_path / "merged.cif"
+        assert _merge(runner, app, pair, out)[0] == 0
+        entities = set(_column(out, "_entity.id"))
+        chains = set(_column(out, "_struct_asym.id"))
+        assert set(_column(out, "_atom_site.label_entity_id")) <= entities
+        assert set(_column(out, "_atom_site.label_asym_id")) <= chains
+        # _struct_asym points at _entity in turn, so the chain of references has
+        # to close there too.
+        assert set(_column(out, "_struct_asym.entity_id")) <= entities
+
+    def test_each_distinct_component_gets_its_own_entity(
+        self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        out = tmp_path / "merged.cif"
+        assert _merge(runner, app, pair, out)[0] == 0
+        # The ground-only EDO and the changed-only W2S must not share an entity,
+        # which is exactly what copying one input's _entity table would do.
+        comps = _column(out, "_atom_site.label_comp_id")
+        entities = _column(out, "_atom_site.label_entity_id")
+        by_comp = {comp: entity for comp, entity in zip(comps, entities, strict=True)}
+        assert by_comp["EDO"] != by_comp["W2S"]
+        assert _column(out, "_entity.type") == ["polymer", "non-polymer", "non-polymer"]
 
     def test_entry_id_and_block_name_are_the_output_stem(
         self, runner: CliRunner, app: typer.Typer, pair: tuple[Path, Path], tmp_path: Path
